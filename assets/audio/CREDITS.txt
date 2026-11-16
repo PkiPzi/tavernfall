@@ -1,0 +1,5 @@
+All audio here is CC0 (public domain dedication).
+music/tavern.ogg   "Medieval: The Old Tower Inn" by AntumDeluge (opengameart.org/content/medieval-the-old-tower-inn)
+music/explore.ogg  "Medieval: Exploration" by -Ryu- (opengameart.org/content/medieval-exploration)
+music/battle.ogg   "Battle Theme A" by jaidynreiman (opengameart.org/content/battle-theme-a)
+sfx/               Kenney RPG Audio and Digital Audio packs (kenney.nl)
