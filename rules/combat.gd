@@ -860,6 +860,8 @@ func _volley(c, sp: Dictionary, targets: Array, slot: int, aims: Array, e: Dicti
 const SPECIAL = ["sleep", "hold-person", "bless", "shield-of-faith", "mage-armor", "hunters-mark", "web", "entangle", "faerie-fire", "fear", "blur", "invisibility",
 	"bane", "heroism", "hideous-laughter", "color-spray", "blindness-deafness", "command", "hypnotic-pattern", "stinking-cloud", "slow", "haste", "spirit-guardians",
 	"lesser-restoration", "expeditious-retreat", "longstrider", "barkskin", "true-strike", "spare-the-dying"]
+# Spells aimed at an empty square rather than a creature: see misty_step().
+const CELL_SPELLS = ["misty-step"]
 # Reaction spells are cast by the engine itself when they would help, so they can be chosen at creation but have no button.
 const REACTIONS = ["shield"]
 
@@ -868,11 +870,35 @@ func castable(index: String) -> bool:
 	var sp: Dictionary = srd.t.spells[index]
 	var known: bool = index in SPECIAL or sp.has("heal_at_slot_level") or (sp.has("damage") \
 		and (sp.damage[0].has("damage_at_slot_level") or sp.damage[0].has("damage_at_character_level")))
-	return (known or index in VOLLEYS) and sp.casting_time in ["1 action", "1 bonus action"]
+	return (known or index in VOLLEYS or index in CELL_SPELLS) and sp.casting_time in ["1 action", "1 bonus action"]
 
 # Can be chosen as a known spell: castable now, or a reaction the engine casts for you.
 func selectable(index: String) -> bool:
 	return castable(index) or index in REACTIONS
+
+# Misty Step: a bonus action, up to 30 ft to a square you can see that is free. No opportunity attacks are provoked.
+func misty_step(c, cell: Vector2i) -> Dictionary:
+	if not "misty-step" in c.spells:
+		return err("spell not prepared")
+	var slot := 0
+	for k in c.slots:
+		if k >= 2 and c.slots[k] > 0 and (slot == 0 or k < slot):
+			slot = k
+	if slot == 0:
+		return err("no spell slot of level 2")
+	if c.cast_leveled_action:
+		return err("already cast a spell this turn")
+	if at(cell) != null or blocked.has(cell) or dist(c.pos, cell) > 30 or cell == c.pos:
+		return err("pick a free square within 30 ft")
+	var p := _pay(c, true)
+	if p != "":
+		return err(p)
+	c.slots[slot] -= 1
+	c.cast_bonus_spell = true
+	break_concentration(c)
+	var from: Vector2i = c.pos
+	c.pos = cell
+	return emit({"type": "teleport", "who": c.name, "spell": "Misty Step", "from": from, "to": cell})
 
 # targets: for area spells the board decides who is inside and passes them all.
 # aims: for Magic Missile and Scorching Ray, one creature per dart or ray (the same creature may repeat); left empty the

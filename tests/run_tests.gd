@@ -499,6 +499,17 @@ func t_more_spells() -> void:
 	cb.dice.queue = [1, 1, 1, 1]  # the save fails, then 3d8 of 1
 	cb.end_turn()
 	eq([g.hp, g.move_left, cb.events.any(func(x): return x.type == "aura")], [g.max_hp - 3, 15, true], "spirit guardians")
+	# Misty Step
+	var ms = pc("wizard", 3, {"spells": ["misty-step", "fire-bolt"]})
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(ms, g)
+	eq(cb.misty_step(ms, Vector2i(1, 0)).ok, false, "misty step needs a free square")
+	eq(cb.misty_step(ms, Vector2i(7, 0)).ok, false, "misty step reaches 30 ft")
+	var slots2: int = ms.slots[2]
+	e = cb.misty_step(ms, Vector2i(5, 0))
+	eq([e.ok, ms.pos, ms.slots[2], ms.bonus, g.reaction], [true, Vector2i(5, 0), slots2 - 1, false, true], "misty step teleports without provoking")
+	eq(cb.misty_step(ms, Vector2i(4, 0)).ok, false, "one bonus action a turn")
+	eq(cb.castable("misty-step"), true, "misty step has a button")
 	# Wizard level 5: Haste, Slow, Hideous Laughter, Color Spray
 	var wz = pc("wizard", 5, {"spells": ["haste", "slow", "hideous-laughter", "color-spray"]})
 	var rg = pc("rogue")

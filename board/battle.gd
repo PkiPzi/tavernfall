@@ -878,6 +878,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 			if mode == "move":
 				if not path.is_empty():
 					_do(cb.move(c, path))
+			elif mode == "cast" and pick in cb.CELL_SPELLS:  # Misty Step: any free square
+				_do(cb.misty_step(c, cell))
 			else:
 				var ts := _targets(c, cell)
 				if ts.is_empty():
@@ -1331,6 +1333,13 @@ func _show(e: Dictionary) -> void:
 			_say("  %s is %s %s" % [e.who, "now" if e.on else "no longer", e.condition], "9a948a")
 			if e.condition == "unconscious" and not e.on and not minis[e.who].c.dead:
 				_anim(e.who, "Lie_StandUp")
+		"teleport":
+			Game.sfx("phaser_up_1")
+			_burst(minis[e.who].node.position, TYPE_COLOR.force)
+			minis[e.who].node.position = world(e.to)
+			_burst(world(e.to), TYPE_COLOR.force)
+			_say("%s steps through the mist" % e.who, "b48cff")
+			await _wait(0.3)
 		"aura":
 			_say("%s's %s burns %s for %d%s" % [e.who, e.spell, e.target, e.damage, " (saved)" if e.saved else ""], "b48cff")
 			_float(e.target, "-%d" % e.damage if e.damage > 0 else "no effect", Color("ffe08a"))
