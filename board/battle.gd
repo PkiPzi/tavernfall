@@ -406,9 +406,41 @@ func _button(text: String, on: Callable, enabled := true, lit := false, spell :=
 	pending.append({"icon": Hud.icon_for(text, spell), "tip": tip if tip != "" else text, "on": on, "enabled": enabled, "lit": lit, "count": count})
 
 var aims := []   # Magic Missile and Scorching Ray: the creature each dart or ray is aimed at so far
+var upcast := 0  # slot level chosen with U for the picked spell; 0 = the lowest slot that works
+
+# The slot a spell of level `lvl` is cast with: the chosen upcast level if one is left, else the lowest that works.
+func _slot_for(c, lvl: int) -> int:
+	if upcast >= lvl and c.slots.get(upcast, 0) > 0:
+		return upcast
+	var slot := 0
+	for k in c.slots:
+		if k >= lvl and c.slots[k] > 0 and (slot == 0 or k < slot):
+			slot = k
+	return slot
+
+# U: step to the next slot level that has a slot left, back round to the lowest.
+func _cycle_upcast() -> void:
+	var c = cb.current()
+	if mode != "cast" or c == null:
+		return
+	var lvl := int(srd.t.spells[pick].level)
+	if lvl == 0:
+		hint.text = "Cantrips grow with your level, not with slots."
+		return
+	var levels := []
+	for k in c.slots:
+		if k >= lvl and c.slots[k] > 0:
+			levels.append(k)
+	levels.sort()
+	if levels.is_empty():
+		return
+	var now := _slot_for(c, lvl)
+	upcast = levels[(levels.find(now) + 1) % levels.size()]
+	_hint_text(c)
 
 func _set_mode(m: String, p = 0) -> void:
 	aims = []
+	upcast = 0
 	mode = m
 	pick = p
 	_update_bar()
@@ -564,9 +596,13 @@ func _hint_text(c) -> void:
 		"attack":
 			hint.text = "Click a target for %s" % c.attacks[pick].name
 		"cast":
+			var lvl := int(srd.t.spells[pick].level)
 			hint.text = "Click a target for %s" % srd.t.spells[pick].name
+			if lvl > 0:
+				hint.text += "   (level %d slot; U picks a higher one)" % _slot_for(c, lvl)
 		"act":
-			hint.text = "Click %s" % {"lay": "an ally next to you to heal", "strike": "a foe next to you", "flurry": "a foe next to you"}[pick]
+			hint.text = "Click %s" % {"lay": "an ally next to you to heal", "help": "an ally within 30 ft to help", "shove": "a foe next to you to knock down",
+				"offhand": "a foe next to you", "strike": "a foe next to you", "flurry": "a foe next to you"}.get(pick, "a target")
 		_:
 			hint.text = "Click a square to move.   WASD pan, Q/E turn, wheel or +/- zoom, R/F tilt, Space recentre, C sheet, I bag."
 
@@ -850,11 +886,7 @@ func _commit(c, ts: Array) -> void:
 			_:
 				_do(cb.bonus_strike(c, ts[0], pick == "flurry"))
 	else:
-		var lvl := int(srd.t.spells[pick].level)
-		var slot := 0
-		for k in c.slots:  # shortcut: always the lowest slot that works; add a picker for upcasting
-			if k >= lvl and c.slots[k] > 0 and (slot == 0 or k < slot):
-				slot = k
+		var slot := _slot_for(c, int(srd.t.spells[pick].level))
 		if pick in cb.VOLLEYS:  # one click per dart or ray, each can go to a different foe; Enter sends the rest after the last aim
 			aims.append(ts[0])
 			var n: int = cb.volley_size(pick, slot)
@@ -893,13 +925,12 @@ func _unhandled_input(ev: InputEvent) -> void:
 	elif ev is InputEventKey and ev.pressed:
 		if ev.keycode == KEY_ENTER and not aims.is_empty() and cb.current() != null and not busy:  # fire the rest of the volley at the last target
 			var c = cb.current()
-			var slot := 0
-			for k in c.slots:
-				if k >= int(srd.t.spells[pick].level) and c.slots[k] > 0 and (slot == 0 or k < slot):
-					slot = k
+			var slot := _slot_for(c, int(srd.t.spells[pick].level))
 			var shots := aims.duplicate()
 			aims = []
 			_do(cb.cast(c, pick, _unique(shots), slot, shots))
+		elif ev.keycode == KEY_U:
+			_cycle_upcast()
 		elif ev.keycode == KEY_C and cb.current() != null:
 			Sheet.open(ui_layer, cb.current())
 		elif ev.keycode == KEY_I and cb.current() != null:  # the bag; a potion can be drunk from it on that hero's own turn

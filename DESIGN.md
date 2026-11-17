@@ -178,7 +178,9 @@ Engine stays Godot: BG3's own engine cannot be reused, and its assets convert to
   Spirit Guardians (aura, start of the foe's turn), Lesser Restoration, Expeditious Retreat, Longstrider, Barkskin, True Strike, Spare the Dying. Shield is a reaction cast
   automatically when it turns a hit into a miss (`REACTIONS`, `selectable()`; no prompt yet). Shortcuts: Heroism heals instead of temporary hit points, Haste's extra action is any
   action and its tiredness is not modelled, Stinking Cloud only costs the first turn.
-- Still missing: Revivify (needs a dead target), Misty Step (needs a square target), Mirror Image, upcasting picker, reaction prompts.
+- Misty Step (`Combat.misty_step`, any free square within 30 ft, bonus action). Upcasting: with a spell picked press U to step through the slot levels that have a slot left
+  (hint shows the level; default is still the lowest). The Help/Shove/Off-hand hint text no longer fails on a missing key.
+- Still missing: Revivify (needs a dead target), Mirror Image, reaction prompts (Shield fires by itself).
 - Test hooks added to `TAVERN_CLICKS`: `e now` ends the turn, `p x,y` puts the nearest foe there. With `TAVERN_SHOT` set the click hook no longer quits, the screenshot does.
 - Story stage: floating hero names are hidden (the portrait column shows them).
 
