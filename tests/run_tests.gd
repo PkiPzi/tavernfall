@@ -85,6 +85,7 @@ func _init() -> void:
 	t_cover()
 	t_twoweapon()
 	t_control_spells()
+	t_more_spells()
 	t_fights()
 	print("%d checks, %d failed" % [checks, fails])
 	quit(1 if fails > 0 else 0)
@@ -439,6 +440,86 @@ func t_spells() -> void:
 	eq([bandit.has("paralyzed"), c.conc], [false, ""], "failed concentration ends the spell")
 	eq(cb.castable("bless"), true, "bless is automated")
 	eq(cb.castable("guidance"), false, "guidance not automated yet")
+
+func t_more_spells() -> void:
+	var cb
+	var g = Creature.make_monster(srd, "goblin")
+	# Shield: a hit that +5 AC would turn into a miss is answered by the reaction
+	var w = pc("wizard", 1, {"spells": ["fire-bolt", "shield"]})
+	cb = duel(g, w)
+	var slots_before: int = w.slots[1]
+	cb.dice.queue = [8]  # 8 + 4 = 12 beats AC 11 but not AC 16
+	var e = cb.attack(g, w)
+	eq([e.hit, w.has("shield-spell"), w.slots[1], w.reaction], [false, true, slots_before - 1, false], "shield turns a hit into a miss")
+	eq(cb.ac_of(w), w.ac + 5, "shield adds 5 AC")
+	cb.dice.queue = [20, 1]
+	cb.end_turn()
+	cb.end_turn()
+	eq(w.has("shield-spell"), false, "shield ends at the start of the caster's next turn")
+	cb = duel(g, w)
+	cb.dice.queue = [18]  # 22 still beats AC 16: no point in casting
+	eq([cb.attack(g, w).hit, w.has("shield-spell")], [true, false], "no shield when it would not help")
+	eq([cb.selectable("shield"), cb.castable("shield")], [true, false], "shield is picked at creation but has no button")
+	# Bane and Heroism
+	var c = pc("cleric", 3, {"spells": ["bane", "spare-the-dying", "command", "lesser-restoration", "spirit-guardians"]})
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(c, g)
+	cb.dice.queue = [1]
+	cb.cast(c, "bane", [g])
+	eq([g.has("baned"), c.conc], [true, "bane"], "bane on a failed save")
+	cb = duel(c, g)
+	cb.dice.queue = [20]
+	cb.cast(c, "bane", [g])
+	eq(g.has("baned"), false, "bane resisted")
+	# Command: grovel
+	cb = duel(c, g)
+	cb.dice.queue = [1]
+	cb.cast(c, "command", [g])
+	eq([g.has("prone"), g.has("incapacitated")], [true, true], "command makes a foe grovel")
+	# allies: lesser restoration, spare the dying, barkskin
+	var f = pc("fighter")
+	cb = allies(c, f)
+	cb.add_condition(f, "poisoned")
+	cb.cast(c, "lesser-restoration", [f])
+	eq(f.has("poisoned"), false, "lesser restoration")
+	cb = allies(c, f)
+	f.hp = 0
+	cb.cast(c, "spare-the-dying", [f])
+	eq(f.stable, true, "spare the dying")
+	f.hp = 5
+	var rg0 = pc("rogue")
+	cb = allies(c, rg0)
+	cb.add_condition(rg0, "barkskin")  # a druid's or ranger's spell; the effect is what matters here
+	eq(cb.ac_of(rg0), 16, "barkskin sets AC 16 at least")
+	# Spirit Guardians: burns a foe that starts its turn nearby, halves its speed
+	g = Creature.make_monster(srd, "goblin")
+	c = pc("cleric", 5, {"spells": ["spirit-guardians"]})
+	cb = duel(c, g)
+	cb.cast(c, "spirit-guardians", [c], 3)
+	cb.dice.queue = [1, 1, 1, 1]  # the save fails, then 3d8 of 1
+	cb.end_turn()
+	eq([g.hp, g.move_left, cb.events.any(func(x): return x.type == "aura")], [g.max_hp - 3, 15, true], "spirit guardians")
+	# Wizard level 5: Haste, Slow, Hideous Laughter, Color Spray
+	var wz = pc("wizard", 5, {"spells": ["haste", "slow", "hideous-laughter", "color-spray"]})
+	var rg = pc("rogue")
+	cb = allies(wz, rg)
+	cb.cast(wz, "haste", [rg])
+	eq([cb.ac_of(rg), rg.has("hasted")], [rg.ac + 2, true], "haste: AC +2")
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(wz, g)
+	cb.dice.queue = [1]
+	cb.cast(wz, "slow", [g])
+	eq([g.has("slowed"), cb.ac_of(g)], [true, g.ac - 2], "slow: AC -2")
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(wz, g)
+	cb.dice.queue = [1]
+	cb.cast(wz, "hideous-laughter", [g])
+	eq([g.has("prone"), g.has("incapacitated")], [true, true], "hideous laughter")
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(wz, g)
+	cb.dice.queue = [5, 5, 5, 5, 5, 5]  # 30 hit points of blinding
+	cb.cast(wz, "color-spray", [g])
+	eq(g.has("blinded"), true, "color spray blinds the weakest")
 
 func t_movement() -> void:
 	var f = pc("fighter")

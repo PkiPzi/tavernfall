@@ -236,7 +236,7 @@ func _pool(level: int) -> Array:
 	var cb := Combat.new(Game.dice, Game.srd)
 	var out := []
 	for sp in Game.srd.t.spells.values():
-		if int(sp.level) == level and sp.classes.any(func(c): return c.index == s.cls) and cb.castable(sp.index):
+		if int(sp.level) == level and sp.classes.any(func(c): return c.index == s.cls) and cb.selectable(sp.index):
 			out.append(sp)
 	out.sort_custom(func(a, b): return a.name < b.name)
 	return out

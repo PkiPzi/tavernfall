@@ -5,7 +5,7 @@ extends Node3D
 # Test hooks (environment): TAVERN_SEED, TAVERN_AUTOPLAY=1 (AI plays the party too),
 # TAVERN_SHOT=file.png with TAVERN_SHOT_AT=seconds (save a screenshot and quit),
 # TAVERN_CLICKS="m 4,3;m foe;a foe" (on the player's turns, click those squares with real mouse-button events:
-# m = move there, a = attack there with the first weapon, "foe" = the nearest foe; prints the outcome),
+# m = move there, a = attack there with the first weapon, "foe" = the nearest foe, "e now" = end the turn, "p 7,3" = put the nearest foe there; prints the outcome),
 # TAVERN_ZOOM=5 (camera distance), TAVERN_FX=1 (fire one spell effect at the first foe after 3 s), TAVERN_OVERLAY=sheet|bag|levelup|cond (open it after 4 s),
 # TAVERN_ENC="forest:ogre=1,goblin=2" and TAVERN_PARTY="barbarian,monk@5" (pick the place, foes and heroes).
 
@@ -644,6 +644,52 @@ func _path_marks(steps: Array, cost_ft: int) -> void:
 		add_child(tag)
 		lit.append(tag)
 
+# The cheapest walk to a square from which weapon `i` of c reaches foe t: {"path": [...], "cost": feet}; empty path = no way there.
+func _approach(c, t, i: int) -> Dictionary:
+	var w: Dictionary = c.attacks[i]
+	var want: int = (w.range if w.ranged else w.reach) / 5  # squares; a bow walks to normal range so it keeps no disadvantage
+	var best := []
+	var best_cost := 1 << 30
+	astar.set_point_solid(c.pos, false)  # the mover stands on a solid square, and no path can start from one
+	for dx in range(-want, want + 1):
+		for dy in range(-want, want + 1):
+			var cell: Vector2i = t.pos + Vector2i(dx, dy)
+			if cell == t.pos or not astar.is_in_boundsv(cell) or astar.is_point_solid(cell):
+				continue
+			var full: Array = astar.get_id_path(c.pos, cell).slice(1)
+			if full.is_empty():
+				continue
+			var cost := 0
+			for step in full:
+				cost += 10 if cb.difficult.has(step) else 5
+			if cost < best_cost:
+				best = full
+				best_cost = cost
+	astar.set_point_solid(c.pos, true)
+	return {"path": best, "cost": best_cost}
+
+# Clicking a foe out of reach: walk to the nearest square the weapon reaches from and strike, when the movement left allows it.
+func _attack_or_approach(c, t) -> void:
+	var w: Dictionary = c.attacks[pick]
+	if t.side == c.side or cb.dist(c.pos, t.pos) <= (w.long if w.ranged else w.reach):
+		_do(cb.attack(c, t, pick))
+		return
+	var a := _approach(c, t, pick)
+	if a.path.is_empty():
+		hint.text = "There is no way through to it."
+		return
+	if a.cost > c.move_left:
+		hint.text = "Out of range: it is %d ft of walking away and you have %d ft of movement left." % [a.cost, c.move_left]
+		return
+	var r: Dictionary = cb.move(c, a.path)
+	if not r.ok:
+		hint.text = "Cannot do that: " + r.error
+		return
+	mode = "move"
+	await _play()
+	if cb.winner() == "" and cb.current() == c and cb.active(c):
+		_do(cb.attack(c, t, pick))
+
 func _hover() -> void:
 	var c = cb.current()
 	var cell := _cell_under_mouse()
@@ -677,8 +723,14 @@ func _hover() -> void:
 		var foe = cb.at(cell)
 		if mode == "attack" and foe != null and foe.side != c.side:
 			var h: Dictionary = cb.hit_chance(c, foe, pick)
-			hit_label.text = "%d%%%s%s" % [h.pct, " ▲" if h.mode > 0 else (" ▼" if h.mode < 0 else ""), "" if h.in_range else "  out of range"]
-			hit_label.add_theme_color_override("font_color", Color("ff6b5a") if not h.in_range or h.pct < 40 else (Color("ffc24a") if h.pct < 70 else Color("7ddc6a")))
+			var far := ""
+			var reachable: bool = h.in_range
+			if not h.in_range:
+				var a := _approach(c, foe, pick)
+				reachable = not a.path.is_empty() and a.cost <= c.move_left
+				far = "  walk %d ft, then attack" % a.cost if reachable else "  out of range"
+			hit_label.text = "%d%%%s%s" % [h.pct, " ▲" if h.mode > 0 else (" ▼" if h.mode < 0 else ""), far]
+			hit_label.add_theme_color_override("font_color", Color("ff6b5a") if not reachable or h.pct < 40 else (Color("ffc24a") if h.pct < 70 else Color("7ddc6a")))
 			hit_tag.visible = true
 
 # Fills the target panel for whoever stands on `cell`, or hides it.
@@ -716,10 +768,12 @@ func _targets(c, cell: Vector2i) -> Array:
 	if mode in ["attack", "act"]:
 		return [t] if t != null else []
 	var sp: Dictionary = srd.t.spells[pick]
-	if pick == "bless":  # up to three allies, the ones nearest the click
-		var friends: Array = cb.all.filter(func(o): return o.side == c.side and not o.dead and cb.dist(c.pos, o.pos) <= 30)
-		friends.sort_custom(func(a, b): return a.pos.distance_squared_to(cell) < b.pos.distance_squared_to(cell))
-		return friends.slice(0, 3)
+	if pick in ["spirit-guardians", "expeditious-retreat"]:  # these work on the caster alone, wherever you click
+		return [c]
+	if pick in ["bless", "bane"]:  # up to three allies (Bless) or foes (Bane), the ones nearest the click
+		var pool: Array = cb.all.filter(func(o): return (o.side == c.side) == (pick == "bless") and not o.dead and cb.dist(c.pos, o.pos) <= 30)
+		pool.sort_custom(func(a, b): return a.pos.distance_squared_to(cell) < b.pos.distance_squared_to(cell))
+		return pool.slice(0, 3)
 	if not sp.has("area_of_effect"):
 		return [t] if t != null else []
 	var size := int(sp.area_of_effect.size)
@@ -775,7 +829,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 				if ts.is_empty():
 					hint.text = "Nobody there."
 				elif mode == "attack":
-					_do(cb.attack(c, ts[0], pick))
+					_attack_or_approach(c, ts[0])
 				elif mode == "act":
 					match pick:
 						"lay":
@@ -1042,6 +1096,8 @@ func _play() -> void:
 		banner.text = "Victory!  %d XP each" % cb.events[-1].xp_each if cb.winner() == "party" else "The party has fallen"
 		banner.visible = true
 		ring.visible = false
+		hb_root.visible = false  # nothing to do on the hotbar any more, and End Turn must not be pressed after the last foe is down
+		target_panel.visible = false
 		Game.sfx("power_up_3" if cb.winner() == "party" else "low_down")
 		for m in minis.values():
 			if m.c.side == cb.winner() and cb.active(m.c):
@@ -1052,7 +1108,15 @@ func _play() -> void:
 		if autoplay and Game.story.is_empty():
 			return
 		_update_bar()
-		_button("Continue" if not Game.story.is_empty() else "Fight again", Game.after_battle)
+		# the hotbar is empty once the fight is won, so the way on is a real button under the banner
+		var go := Ui.button("Continue" if not Game.story.is_empty() else "Fight again", Game.after_battle)
+		go.add_theme_font_size_override("font_size", 26)
+		go.set_anchors_preset(Control.PRESET_CENTER)
+		go.offset_left = -130
+		go.offset_right = 130
+		go.offset_top = 70
+		go.offset_bottom = 130
+		banner.get_parent().add_child(go)
 		if autoplay:
 			Game.after_battle()
 		return
@@ -1077,6 +1141,22 @@ func _auto_click() -> void:
 		while busy:
 			await get_tree().process_frame
 		var step: PackedStringArray = click.split(" ")
+		if step[0] == "p":  # "p 7,3": put the nearest foe on that square (test setup)
+			var me = cb.current()
+			var foes: Array = cb.all.filter(func(o): return o.side != me.side and not o.dead)
+			foes.sort_custom(func(x, y): return cb.dist(me.pos, x.pos) < cb.dist(me.pos, y.pos))
+			foes[0].pos = Vector2i(int(step[1].get_slice(",", 0)), int(step[1].get_slice(",", 1)))
+			minis[foes[0].name].node.position = world(foes[0].pos)
+			_refresh()
+			continue
+		if step[0] == "e":  # "e now": end the turn and let the foes act
+			cb.end_turn()
+			_play()
+			await get_tree().create_timer(5.0).timeout
+			while busy:
+				await get_tree().process_frame
+			print("END TURN -> now %s, foes at %s" % [cb.current().name, cb.all.filter(func(o): return not o.is_pc).map(func(o): return o.pos)])
+			continue
 		var cell := Vector2i(int(step[1].get_slice(",", 0)), int(step[1].get_slice(",", 1)))
 		if step[1] == "foe":  # the square of the nearest foe, or next to it for a move
 			var me = cb.current()
@@ -1085,8 +1165,9 @@ func _auto_click() -> void:
 			cell = foes[0].pos + (Vector2i(-1, 0) if step[0] == "m" else Vector2i.ZERO)
 		if step[0] == "a":
 			_set_mode("attack", 0)
+		await get_tree().create_timer(1.0).timeout  # the camera eases toward whoever acts; aim once it has settled
 		fake_mouse = cam.unproject_position(world(cell))
-		await get_tree().create_timer(0.3).timeout
+		await get_tree().create_timer(0.2).timeout
 		var press := InputEventMouseButton.new()
 		press.position = fake_mouse
 		press.button_index = MOUSE_BUTTON_LEFT
@@ -1096,7 +1177,7 @@ func _auto_click() -> void:
 		var c = cb.order.filter(func(o): return o.is_pc)[0]
 		print("CLICK %s -> %s at %s, foes hp %s, hint: %s" % [click, c.name, c.pos,
 			cb.all.filter(func(o): return not o.is_pc).map(func(o): return o.hp), hint.text])
-	if not todo.is_empty():
+	if not todo.is_empty() and OS.get_environment("TAVERN_SHOT") == "":  # with a screenshot pending, that quits instead
 		get_tree().quit()
 
 func _show(e: Dictionary) -> void:
@@ -1221,6 +1302,11 @@ func _show(e: Dictionary) -> void:
 			_say("  %s is %s %s" % [e.who, "now" if e.on else "no longer", e.condition], "9a948a")
 			if e.condition == "unconscious" and not e.on and not minis[e.who].c.dead:
 				_anim(e.who, "Lie_StandUp")
+		"aura":
+			_say("%s's %s burns %s for %d%s" % [e.who, e.spell, e.target, e.damage, " (saved)" if e.saved else ""], "b48cff")
+			_float(e.target, "-%d" % e.damage if e.damage > 0 else "no effect", Color("ffe08a"))
+		"stable":
+			_say("%s is stabilised" % e.who, "6dffa0")
 		"concentration_lost":
 			_say("%s loses concentration on %s" % [e.who, e.spell], "ffb060")
 		"dodge":

@@ -24,6 +24,10 @@ const COND = {
 	"raging": {}, "blessed": {}, "shielded": {}, "mage-armored": {}, "marked": {},
 	"helped": {"atk": 1}, "hidden": {"atk": 1},  # used up by the next attack
 	"faerie-fire": {"def": 1}, "blurred": {"def": -1},
+	"baned": {}, "slowed": {}, "hasted": {}, "heroic": {}, "hurrying": {}, "longstrider": {}, "barkskin": {},
+	"shield-spell": {}, "spirit-guardians": {},
+	"entranced": {"incap": true, "speed0": true},  # Hypnotic Pattern: ends when it takes damage
+	"retching": {"incap": true},                   # Stinking Cloud: the turn is lost
 }
 
 var dice
@@ -110,7 +114,23 @@ func _advance() -> Dictionary:
 		c.actions = 1
 		c.bonus = true
 		c.reaction = true
+		remove_condition(c, "shield-spell", false)
 		c.move_left = 0 if flag(c, "speed0") else c.speed
+		if c.move_left > 0:
+			if c.has("slowed"):
+				c.move_left /= 2
+			if c.has("hasted"):
+				c.move_left *= 2
+				c.actions = 2  # shortcut: the extra action is any action, not only attack, dash, disengage, hide or use object
+			if c.has("longstrider"):
+				c.move_left += 10
+			if c.has("hurrying"):
+				c.move_left += c.speed  # Expeditious Retreat: a free dash (shortcut: the bonus-action dash costs nothing)
+		if c.has("heroic") and c.hp > 0:
+			heal(c, 2)  # shortcut: no temporary hit points in the engine, so Heroism heals a little each turn
+		_auras(c)
+		if c.dead:
+			continue
 		c.dodging = false
 		c.disengaged = false
 		c.attacks_left = 0
@@ -125,6 +145,24 @@ func _advance() -> Dictionary:
 			continue
 		return emit({"type": "turn", "who": c.name, "round": round_no})
 	return emit({"type": "end", "winner": "nobody", "xp_each": 0})
+
+# Spirit Guardians: a foe that starts its turn within 15 ft of the caster takes radiant damage (Wisdom save for half) and moves at half speed.
+func _auras(c) -> void:
+	for g in all:
+		var aura = null
+		for x in g.conditions:
+			if x.id == "spirit-guardians":
+				aura = x
+		if aura == null or g.side == c.side or not active(g) or dist(g.pos, c.pos) > 15:
+			continue
+		var slot: int = aura.get("slot", 3)
+		var ok: bool = save(c, "wis", g.spell_dc()).success
+		var amount: int = dice.roll("%dd8" % slot)
+		var dealt := damage(c, amount / 2 if ok else amount, "radiant")
+		c.move_left /= 2
+		emit({"type": "aura", "who": g.name, "spell": "Spirit Guardians", "target": c.name, "damage": dealt, "saved": ok})
+		if c.dead:
+			return
 
 # End of a creature's turn: repeat saves and count down timed conditions.
 func _tick(c) -> void:
@@ -190,9 +228,9 @@ func save(c, ability: String, dc: int, mode := 0) -> Dictionary:
 	if ability in ["str", "dex"] and flag(c, "autofail"):
 		return emit({"type": "save", "who": c.name, "ability": ability, "dc": dc, "roll": 0, "total": 0, "success": false})
 	if ability == "dex":
-		mode += (-1 if flag(c, "dex_save") else 0) + (1 if c.dodging and can_act(c) else 0)
+		mode += (-1 if flag(c, "dex_save") else 0) + (1 if c.dodging and can_act(c) else 0) + (1 if c.has("hasted") else 0)
 	var r: Dictionary = dice.d20(clampi(mode, -1, 1))
-	var total: int = r.roll + c.save_bonus(ability) + (dice.die(4) if c.has("blessed") else 0)
+	var total: int = r.roll + c.save_bonus(ability) + (dice.die(4) if c.has("blessed") else 0) - (dice.die(4) if c.has("baned") else 0)
 	return emit({"type": "save", "who": c.name, "ability": ability, "roll": r.roll, "rolls": r.rolls,
 		"total": total, "dc": dc, "success": total >= dc})
 
@@ -319,7 +357,24 @@ func ac_of(t, from = null) -> int:
 	var v: int = t.ac
 	if t.has("mage-armored"):
 		v = max(v, 13 + t.mod("dex"))
-	return v + (2 if t.has("shielded") else 0) + (cover_bonus(from, t) if from != null else 0)
+	if t.has("barkskin"):
+		v = max(v, 16)
+	return v + (2 if t.has("shielded") else 0) + (5 if t.has("shield-spell") else 0) + (2 if t.has("hasted") else 0) \
+		- (2 if t.has("slowed") else 0) + (cover_bonus(from, t) if from != null else 0)
+
+# Shield (reaction): a hit that would miss with +5 AC is answered at once by a caster who knows it and has a slot.
+# shortcut: fired automatically for everyone; add a prompt when the UI can ask the player.
+func _shield_reaction(t, total: int, ac: int) -> bool:
+	if not "shield" in t.spells or not t.reaction or not can_act(t) or total >= ac + 5:
+		return false
+	for k in t.slots:
+		if k >= 1 and t.slots[k] > 0:
+			t.slots[k] -= 1
+			t.reaction = false
+			add_condition(t, "shield-spell", 1)
+			emit({"type": "cast", "who": t.name, "spell": "Shield", "slot": k, "results": []})
+			return true
+	return false
 
 # The chance (0 to 100) that attack i of a hits t right now, with advantage or disadvantage worked in,
 # for the hit-chance tag. mode: 1 advantage, -1 disadvantage. A natural 20 always hits, a natural 1 never.
@@ -360,9 +415,12 @@ func attack(a, t, i := 0, free := false, off := false) -> Dictionary:
 	remove_condition(a, "helped")  # a Help or a hiding place is spent by the attack
 	remove_condition(a, "hidden")
 	var crit: bool = r.roll >= a.crit_min
-	var bonus: int = w.bonus + (dice.die(4) if a.has("blessed") else 0)
+	var bonus: int = w.bonus + (dice.die(4) if a.has("blessed") else 0) - (dice.die(4) if a.has("baned") else 0)
 	var ac := ac_of(t, a if w.ranged else null)
 	var hit: bool = crit or (r.roll != 1 and r.roll + bonus >= ac)
+	if hit and not crit and _shield_reaction(t, r.roll + bonus, ac):
+		ac = ac_of(t, a if w.ranged else null)
+		hit = r.roll + bonus >= ac
 	if hit and d <= 5 and flag(t, "crit_melee"):
 		crit = true
 	var e := emit({"type": "attack", "who": a.name, "target": t.name, "weapon": w.name, "roll": r.roll,
@@ -693,6 +751,77 @@ func _special(c, sp: Dictionary, targets: Array, slot: int) -> bool:
 		"invisibility":
 			c.conc = sp.index
 			add_condition(targets[0], "invisible", 10, {"by": c})
+		"bane":
+			c.conc = sp.index
+			for t in targets.slice(0, 2 + slot):
+				if not save(t, "cha", c.spell_dc()).success:
+					add_condition(t, "baned", 10, {"by": c})
+		"heroism":
+			c.conc = sp.index
+			remove_condition(targets[0], "frightened", false)
+			add_condition(targets[0], "heroic", 10, {"by": c})
+		"hideous-laughter":  # prone and helpless with laughter; a new save each turn
+			c.conc = sp.index
+			if not save(targets[0], "wis", c.spell_dc()).success:
+				add_condition(targets[0], "prone")
+				add_condition(targets[0], "incapacitated", 10, {"save": "wis", "dc": c.spell_dc(), "by": c})
+		"color-spray":  # weakest first, until 6d10 hit points are used up; blinded to the end of their next turn
+			var pool: int = dice.roll("%dd10" % (6 + 2 * (slot - 1)))
+			targets.sort_custom(func(a, b): return a.hp < b.hp)
+			for t in targets:
+				if active(t) and t.hp <= pool:
+					pool -= t.hp
+					add_condition(t, "blinded", 1)
+		"blindness-deafness":
+			c.conc = ""  # not concentration in the SRD
+			if not save(targets[0], "con", c.spell_dc()).success:
+				add_condition(targets[0], "blinded", 10, {"save": "con", "dc": c.spell_dc()})
+		"command":  # "Grovel": falls prone and loses its turn
+			for t in targets.slice(0, slot):
+				if t.kind != "undead" and not save(t, "wis", c.spell_dc()).success:
+					add_condition(t, "prone")
+					add_condition(t, "incapacitated", 1)
+		"hypnotic-pattern":
+			c.conc = sp.index
+			for t in targets:
+				if t != c and not save(t, "wis", c.spell_dc()).success:
+					add_condition(t, "entranced", 10, {"wake": true, "by": c})
+		"stinking-cloud":  # shortcut: only the first turn is lost; the lingering cloud is not modelled
+			c.conc = sp.index
+			for t in targets:
+				if not save(t, "con", c.spell_dc()).success:
+					add_condition(t, "retching", 1)
+		"slow":
+			c.conc = sp.index
+			for t in targets.slice(0, 6):
+				if not save(t, "wis", c.spell_dc()).success:
+					add_condition(t, "slowed", 10, {"save": "wis", "dc": c.spell_dc(), "by": c})
+		"haste":  # shortcut: the tiredness when it ends is not modelled
+			c.conc = sp.index
+			add_condition(targets[0], "hasted", 10, {"by": c})
+		"spirit-guardians":
+			c.conc = sp.index
+			add_condition(c, "spirit-guardians", 10, {"by": c, "slot": slot})
+		"lesser-restoration":
+			for id in ["poisoned", "blinded", "paralyzed", "deafened"]:
+				if targets[0].has(id):
+					remove_condition(targets[0], id)
+					break
+		"expeditious-retreat":
+			c.conc = sp.index
+			add_condition(c, "hurrying", 10, {"by": c})
+		"longstrider":
+			add_condition(targets[0], "longstrider", 600)
+		"barkskin":
+			c.conc = sp.index
+			add_condition(targets[0], "barkskin", 100, {"by": c})
+		"true-strike":  # the 2014 text: advantage on the first attack of your next turn
+			c.conc = sp.index
+			add_condition(c, "helped", 2)
+		"spare-the-dying":
+			if targets[0].hp == 0 and not targets[0].dead:
+				targets[0].stable = true
+				emit({"type": "stable", "who": targets[0].name})
 		_:
 			return false
 	return true
@@ -728,7 +857,11 @@ func _volley(c, sp: Dictionary, targets: Array, slot: int, aims: Array, e: Dicti
 		e.results.append({"target": t.name, "damage": damage(t, totals[t], type), "darts": who.count(t)})
 	return e
 
-const SPECIAL = ["sleep", "hold-person", "bless", "shield-of-faith", "mage-armor", "hunters-mark", "web", "entangle", "faerie-fire", "fear", "blur", "invisibility"]
+const SPECIAL = ["sleep", "hold-person", "bless", "shield-of-faith", "mage-armor", "hunters-mark", "web", "entangle", "faerie-fire", "fear", "blur", "invisibility",
+	"bane", "heroism", "hideous-laughter", "color-spray", "blindness-deafness", "command", "hypnotic-pattern", "stinking-cloud", "slow", "haste", "spirit-guardians",
+	"lesser-restoration", "expeditious-retreat", "longstrider", "barkskin", "true-strike", "spare-the-dying"]
+# Reaction spells are cast by the engine itself when they would help, so they can be chosen at creation but have no button.
+const REACTIONS = ["shield"]
 
 # Which of a spell list the engine can resolve. The rest need code before they can be offered.
 func castable(index: String) -> bool:
@@ -736,6 +869,10 @@ func castable(index: String) -> bool:
 	var known: bool = index in SPECIAL or sp.has("heal_at_slot_level") or (sp.has("damage") \
 		and (sp.damage[0].has("damage_at_slot_level") or sp.damage[0].has("damage_at_character_level")))
 	return (known or index in VOLLEYS) and sp.casting_time in ["1 action", "1 bonus action"]
+
+# Can be chosen as a known spell: castable now, or a reaction the engine casts for you.
+func selectable(index: String) -> bool:
+	return castable(index) or index in REACTIONS
 
 # targets: for area spells the board decides who is inside and passes them all.
 # aims: for Magic Missile and Scorching Ray, one creature per dart or ray (the same creature may repeat); left empty the
