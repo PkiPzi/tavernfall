@@ -124,5 +124,8 @@ static func card(layer: CanvasLayer, id: String, place: String, seconds := 4.5) 
 	root.gui_input.connect(func(ev: InputEvent): if ev is InputEventMouseButton and ev.pressed: leave.call())
 	var push := root.create_tween().set_parallel()
 	push.tween_property(pic, "scale", Vector2(1.1, 1.1), seconds + 1.5).from(Vector2(1.0, 1.0)).set_trans(Tween.TRANS_SINE)
-	root.get_tree().create_timer(seconds).timeout.connect(leave)
+	# a tween on root dies with root; a tree timer would call a lambda whose captured root is already freed
+	var wait := root.create_tween()
+	wait.tween_interval(seconds)
+	wait.tween_callback(leave)
 	return root
