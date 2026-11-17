@@ -644,10 +644,8 @@ func _path_marks(steps: Array, cost_ft: int) -> void:
 		add_child(tag)
 		lit.append(tag)
 
-# The cheapest walk to a square from which weapon `i` of c reaches foe t: {"path": [...], "cost": feet}; empty path = no way there.
-func _approach(c, t, i: int) -> Dictionary:
-	var w: Dictionary = c.attacks[i]
-	var want: int = (w.range if w.ranged else w.reach) / 5  # squares; a bow walks to normal range so it keeps no disadvantage
+# The cheapest walk to a square within `want` squares of t: {"path": [...], "cost": feet}; empty path = no way there.
+func _approach(c, t, want: int) -> Dictionary:
 	var best := []
 	var best_cost := 1 << 30
 	astar.set_point_solid(c.pos, false)  # the mover stands on a solid square, and no path can start from one
@@ -668,13 +666,36 @@ func _approach(c, t, i: int) -> Dictionary:
 	astar.set_point_solid(c.pos, true)
 	return {"path": best, "cost": best_cost}
 
-# Clicking a foe out of reach: walk to the nearest square the weapon reaches from and strike, when the movement left allows it.
-func _attack_or_approach(c, t) -> void:
-	var w: Dictionary = c.attacks[pick]
-	if t.side == c.side or cb.dist(c.pos, t.pos) <= (w.long if w.ranged else w.reach):
-		_do(cb.attack(c, t, pick))
-		return
-	var a := _approach(c, t, pick)
+# Squares a weapon walks up to: melee its reach, a bow its normal range (so it keeps no disadvantage).
+func _weapon_want(c, i: int) -> int:
+	var w: Dictionary = c.attacks[i]
+	return (w.range if w.ranged else w.reach) / 5
+
+# When the click is on a lone target out of reach of what is picked: {"want": squares to walk up to}. Empty when it can act from here.
+func _reach(c, ts: Array) -> Dictionary:
+	var t = ts[0]
+	if ts.size() != 1 or t == c:
+		return {}
+	var d: int = cb.dist(c.pos, t.pos)
+	match mode:
+		"attack":
+			var w: Dictionary = c.attacks[pick]
+			if t.side != c.side and d > (w.long if w.ranged else w.reach):
+				return {"want": _weapon_want(c, pick)}
+		"act":
+			var ft := 30 if pick == "help" else 5
+			if d > ft:
+				return {"want": ft / 5}
+		"cast":
+			var sp: Dictionary = srd.t.spells[pick]
+			var r: int = cb._spell_range(sp)
+			if r >= 0 and not sp.has("area_of_effect") and not pick in cb.VOLLEYS and d > r:
+				return {"want": r / 5}
+	return {}
+
+# Walks toward t until `want` squares away, when the movement left allows it, then does `then`.
+func _approach_then(c, t, want: int, then: Callable) -> void:
+	var a := _approach(c, t, want)
 	if a.path.is_empty():
 		hint.text = "There is no way through to it."
 		return
@@ -685,10 +706,9 @@ func _attack_or_approach(c, t) -> void:
 	if not r.ok:
 		hint.text = "Cannot do that: " + r.error
 		return
-	mode = "move"
-	await _play()
+	await _play()  # the pick (mode, pick) stays as it was, so `then` still knows what to do
 	if cb.winner() == "" and cb.current() == c and cb.active(c):
-		_do(cb.attack(c, t, pick))
+		then.call()
 
 func _hover() -> void:
 	var c = cb.current()
@@ -726,7 +746,7 @@ func _hover() -> void:
 			var far := ""
 			var reachable: bool = h.in_range
 			if not h.in_range:
-				var a := _approach(c, foe, pick)
+				var a := _approach(c, foe, _weapon_want(c, pick))
 				reachable = not a.path.is_empty() and a.cost <= c.move_left
 				far = "  walk %d ft, then attack" % a.cost if reachable else "  out of range"
 			hit_label.text = "%d%%%s%s" % [h.pct, " ▲" if h.mode > 0 else (" ▼" if h.mode < 0 else ""), far]
@@ -813,6 +833,40 @@ func _zoom_by(factor: float, toward_pointer: bool) -> void:
 			pivot.position = Vector3(clampf(t.x, 0.0, W * Scenery.CELL), pivot.position.y, clampf(t.z, 0.0, H * Scenery.CELL))
 	zoom_to = clampf(zoom_to * factor, ZOOM_MIN, ZOOM_MAX)
 
+# Does what the picked action says to the targets the click chose (after any walk up to them).
+func _commit(c, ts: Array) -> void:
+	if mode == "attack":
+		_do(cb.attack(c, ts[0], pick))
+	elif mode == "act":
+		match pick:
+			"lay":
+				_do(cb.lay_on_hands(c, ts[0]))
+			"help":
+				_do(cb.help(c, ts[0]))
+			"shove":
+				_do(cb.shove(c, ts[0]))
+			"offhand":
+				_do(cb.offhand(c, ts[0]))
+			_:
+				_do(cb.bonus_strike(c, ts[0], pick == "flurry"))
+	else:
+		var lvl := int(srd.t.spells[pick].level)
+		var slot := 0
+		for k in c.slots:  # shortcut: always the lowest slot that works; add a picker for upcasting
+			if k >= lvl and c.slots[k] > 0 and (slot == 0 or k < slot):
+				slot = k
+		if pick in cb.VOLLEYS:  # one click per dart or ray, each can go to a different foe; Enter sends the rest after the last aim
+			aims.append(ts[0])
+			var n: int = cb.volley_size(pick, slot)
+			if aims.size() < n:
+				hint.text = "%s: %d of %d aimed (last at %s). Click the next target, or press Enter to send the rest the same way." % [srd.t.spells[pick].name, aims.size(), n, ts[0].name]
+				return
+			var shots := aims.duplicate()
+			aims = []
+			_do(cb.cast(c, pick, _unique(shots), slot, shots))
+		else:
+			_do(cb.cast(c, pick, ts, slot))
+
 func _unhandled_input(ev: InputEvent) -> void:
 	if ev is InputEventMouseMotion and ev.button_mask & MOUSE_BUTTON_MASK_RIGHT:
 		yaw -= ev.relative.x * 0.006
@@ -828,37 +882,12 @@ func _unhandled_input(ev: InputEvent) -> void:
 				var ts := _targets(c, cell)
 				if ts.is_empty():
 					hint.text = "Nobody there."
-				elif mode == "attack":
-					_attack_or_approach(c, ts[0])
-				elif mode == "act":
-					match pick:
-						"lay":
-							_do(cb.lay_on_hands(c, ts[0]))
-						"help":
-							_do(cb.help(c, ts[0]))
-						"shove":
-							_do(cb.shove(c, ts[0]))
-						"offhand":
-							_do(cb.offhand(c, ts[0]))
-						_:
-							_do(cb.bonus_strike(c, ts[0], pick == "flurry"))
 				else:
-					var lvl := int(srd.t.spells[pick].level)
-					var slot := 0
-					for k in c.slots:  # shortcut: always the lowest slot that works; add a picker for upcasting
-						if k >= lvl and c.slots[k] > 0 and (slot == 0 or k < slot):
-							slot = k
-					if pick in cb.VOLLEYS:  # one click per dart or ray, each can go to a different foe; Enter sends the rest after the last aim
-						aims.append(ts[0])
-						var n: int = cb.volley_size(pick, slot)
-						if aims.size() < n:
-							hint.text = "%s: %d of %d aimed (last at %s). Click the next target, or press Enter to send the rest the same way." % [srd.t.spells[pick].name, aims.size(), n, ts[0].name]
-							return
-						var shots := aims.duplicate()
-						aims = []
-						_do(cb.cast(c, pick, _unique(shots), slot, shots))
+					var reach := _reach(c, ts)
+					if reach.is_empty():
+						_commit(c, ts)
 					else:
-						_do(cb.cast(c, pick, ts, slot))
+						_approach_then(c, ts[0], reach.want, func(): _commit(c, ts))
 	elif ev is InputEventKey and ev.pressed:
 		if ev.keycode == KEY_ENTER and not aims.is_empty() and cb.current() != null and not busy:  # fire the rest of the volley at the last target
 			var c = cb.current()
