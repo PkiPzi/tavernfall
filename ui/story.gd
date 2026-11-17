@@ -166,14 +166,17 @@ func _build_ui() -> void:
 	row.add_child(entry)
 	row.add_child(Ui.button("Do it", func(): _act(entry.text)))
 	v.add_child(row)
+	# thinking note on the left, a small skip button on the right, in one low row under the answers
+	var foot := HBoxContainer.new()
+	v.add_child(foot)
 	think = Ui.label("", 14, Ui.GOLD)
-	v.add_child(think)
-	skip_btn = Ui.button("Skip voice  (Space)", _skip_voice)
+	think.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	foot.add_child(think)
+	skip_btn = Ui.button("Skip voice (Space)", _skip_voice)
 	skip_btn.visible = false
-	skip_btn.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	skip_btn.offset_left = -170
-	skip_btn.offset_top = -34
-	bottom.add_child(skip_btn)
+	skip_btn.add_theme_font_size_override("font_size", 13)
+	skip_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(skip_btn)
 
 func _place(loc) -> Dictionary:
 	if typeof(loc) != TYPE_DICTIONARY:
