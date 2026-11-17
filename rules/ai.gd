@@ -7,6 +7,10 @@ static func take_turn(cb, c) -> void:
 		cb.end_turn()
 		return
 	foes.sort_custom(func(a, b): return cb.dist(c.pos, a.pos) < cb.dist(c.pos, b.pos))
+	if cb.flag(c, "flee"):
+		_flee(cb, c, foes[0])
+		cb.end_turn()
+		return
 	var t = foes[0]
 	var melee := -1
 	var shot := -1
@@ -65,4 +69,18 @@ static func _approach(cb, c, t) -> void:
 		goal = came[goal]
 	for cell in path:
 		if not cb.active(c) or not cb.move(c, [cell]).ok:
+			return
+
+# A turned creature spends its movement stepping to whichever neighbouring square is furthest from the nearest foe.
+static func _flee(cb, c, foe) -> void:
+	while cb.active(c) and c.move_left >= 5:
+		var best = null
+		var far: int = cb.dist(c.pos, foe.pos)
+		for dx in [-1, 0, 1]:
+			for dy in [-1, 0, 1]:
+				var cell: Vector2i = c.pos + Vector2i(dx, dy)
+				if (dx != 0 or dy != 0) and not cb.blocked.has(cell) and cb.at(cell) == null and cb.dist(cell, foe.pos) > far:
+					far = cb.dist(cell, foe.pos)
+					best = cell
+		if best == null or not cb.move(c, [best]).ok:
 			return

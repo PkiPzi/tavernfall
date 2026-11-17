@@ -1,8 +1,8 @@
 extends RefCounted
 # One combatant: a player character or a monster.
 
-const XP_FOR_LEVEL = [0, 0, 300, 900, 2700, 6500]  # index = level
-const MAX_LEVEL = 5  # shortcut: stops at level 5, raise when higher-level features are coded
+const XP_FOR_LEVEL = [0, 0, 300, 900, 2700, 6500, 14000, 23000, 34000]  # index = level
+const MAX_LEVEL = 8  # shortcut: stops at level 8; the SRD tables go further but the extra features are not coded
 # The ability a class raises by 2 at level 4 (shortcut: no choice of feat or split).
 const PRIMARY = {"barbarian": "str", "bard": "cha", "cleric": "wis", "druid": "wis", "fighter": "str", "monk": "dex",
 	"paladin": "str", "ranger": "dex", "rogue": "dex", "sorcerer": "cha", "warlock": "cha", "wizard": "int"}
@@ -12,6 +12,7 @@ var name := ""
 var side := "party"
 var is_pc := false
 var kind := "humanoid"
+var index := ""       # monsters: SRD index, picks the 3D model
 var cls := ""
 var level := 1
 var xp := 0
@@ -65,6 +66,8 @@ var move_left := 0
 var dodging := false
 var disengaged := false
 var sneak_used := false
+var fight_style := ""
+var light_used := -1      # index of the light melee weapon attacked with this turn, for the off-hand strike
 var attacks_left := 0  # swings still owed by the Attack action already paid for
 var reckless := false
 var smite := false     # paladin: spend a slot on the next hit
@@ -104,6 +107,8 @@ static func make_pc(srd, s: Dictionary):
 	c.level = s.get("level", 1)
 	if c.level >= 4 and not s.get("asi", false):  # built straight at level 4+
 		_improve(s)
+	if c.level >= 8 and not s.get("asi8", false):
+		_improve(s, "asi8")
 	c.abil = s.abilities.duplicate()
 	for src in [srd.t.races[s.race], srd.t.subraces.get(s.get("subrace", ""), {})]:
 		for b in src.get("ability_bonuses", []):
@@ -118,10 +123,10 @@ static func make_pc(srd, s: Dictionary):
 	c.refill()
 	return c
 
-static func _improve(s: Dictionary) -> void:
+static func _improve(s: Dictionary, flag := "asi") -> void:
 	var a: String = PRIMARY[s["class"]]
 	s.abilities[a] = min(20, s.abilities[a] + 2)
-	s["asi"] = true
+	s[flag] = true
 
 # Everything that follows from class, level, abilities and gear.
 func derive(srd) -> void:
@@ -166,6 +171,7 @@ func derive(srd) -> void:
 	speed = int(srd.t.races[spec.race].speed) + int(cs.get("unarmored_movement", 0)) + (10 if "fast-movement" in features else 0)
 
 	var style: String = spec.get("style", "") if features.any(func(f): return f.ends_with("fighting-style")) else ""
+	fight_style = style
 	var shield: bool = spec.get("shield", false)
 	ac = 10 + mod("dex")
 	if "barbarian-unarmored-defense" in features:
@@ -197,7 +203,7 @@ func derive(srd) -> void:
 		var dmg = w.two_handed_damage if w.has("two_handed_damage") and two_handed else w.damage
 		var flat := mod(a) + (2 if style == "dueling" and not ranged and not two_handed else 0)
 		attacks.append({
-			"name": w.name, "ranged": ranged, "finesse": "finesse" in props, "abil": a,
+			"name": w.name, "ranged": ranged, "finesse": "finesse" in props, "abil": a, "light": "light" in props, "die": dmg.damage_dice, "flat": flat,
 			"bonus": mod(a) + (prof if proficient else 0) + (2 if style == "archery" and ranged else 0),
 			"damage": [{"dice": "%s%+d" % [dmg.damage_dice, flat], "type": dmg.damage_type.index}],
 			"reach": 10 if "reach" in props else 5,
@@ -226,6 +232,7 @@ static func make_monster(srd, index: String, label := ""):
 	c.name = label if label != "" else m.name
 	c.side = "enemy"
 	c.kind = m.type
+	c.index = index
 	c.abil = {"str": int(m.strength), "dex": int(m.dexterity), "con": int(m.constitution),
 		"int": int(m.intelligence), "wis": int(m.wisdom), "cha": int(m.charisma)}
 	c.prof = int(m.get("proficiency_bonus", 2))
@@ -321,9 +328,9 @@ func gain_xp(srd, amount: int) -> int:
 		var old := [max_hp, slots_max.duplicate(), res_max.duplicate()]
 		level += 1
 		gained += 1
-		if level == 4 and not spec.get("asi", false):
+		if (level == 4 and not spec.get("asi", false)) or (level == 8 and not spec.get("asi8", false)):
 			var was: int = spec.abilities[PRIMARY[cls]]
-			_improve(spec)
+			_improve(spec, "asi" if level == 4 else "asi8")
 			abil[PRIMARY[cls]] += spec.abilities[PRIMARY[cls]] - was
 		derive(srd)
 		hp += max_hp - old[0]

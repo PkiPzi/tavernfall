@@ -81,6 +81,10 @@ func _init() -> void:
 	t_rest_and_level()
 	t_classes()
 	t_data()
+	t_actions()
+	t_cover()
+	t_twoweapon()
+	t_control_spells()
 	t_fights()
 	print("%d checks, %d failed" % [checks, fails])
 	quit(1 if fails > 0 else 0)
@@ -210,6 +214,116 @@ func t_attacks() -> void:
 	cb.dice.queue = [18, 3]
 	eq(cb.check(f, "str", 15, "athletics").success, false, "poisoned check")
 
+# Help, Hide and Shove.
+func t_twoweapon() -> void:
+	var r = pc("rogue", 1, {"weapons": ["shortsword", "dagger", "shortbow"]})
+	var g = Creature.make_monster(srd, "goblin")
+	var cb = duel(r, g)
+	eq(cb.offhand(r, g).get("ok", true), false, "no off-hand strike before a light attack")
+	cb.dice.queue = [15, 1]
+	cb.attack(r, g, 0)
+	eq(r.light_used, 0, "the light attack is remembered")
+	eq(cb.offhand_index(r), 1, "the dagger is the off-hand weapon")
+	cb.dice.queue = [15, 2]
+	var hp_before: int = g.hp
+	var e: Dictionary = cb.offhand(r, g)
+	eq(e.get("hit", e), true, "the off-hand strike hits")
+	eq(hp_before - g.hp, 2, "off-hand damage has no ability bonus")
+	eq(r.bonus, false, "it costs the bonus action")
+	var f = pc("fighter")
+	eq(duel(f, Creature.make_monster(srd, "goblin")).offhand_index(f), -1, "one weapon, no off-hand")
+
+func t_cover() -> void:
+	var r = pc("rogue")
+	var g = Creature.make_monster(srd, "goblin")
+	var cb = duel(r, g, Vector2i(4, 0))
+	eq(cb.cover_bonus(r, g), 0, "open ground, no cover")
+	cb.blocked[Vector2i(2, 0)] = true
+	eq(cb.cover_bonus(r, g), 2, "one wall is half cover")
+	eq(cb.ac_of(g, r), cb.ac_of(g) + 2, "cover raises AC against the ranged attacker")
+	cb.blocked[Vector2i(3, 0)] = true
+	eq(cb.cover_bonus(r, g), 5, "two walls are three-quarters cover")
+	var bow: int = r.attacks.find_custom(func(w): return w.ranged)
+	var open_pct: int = duel(r, g, Vector2i(4, 0)).hit_chance(r, g, bow).pct
+	eq(cb.hit_chance(r, g, bow).pct < open_pct, true, "the hit chance falls behind cover")
+	eq(cb.cover_bonus(g, r), 5, "cover works both ways")
+
+func t_actions() -> void:
+	var f = pc("fighter")
+	var r = pc("rogue")
+	var g = Creature.make_monster(srd, "goblin")
+	# help: the helped attacker rolls with advantage once, then it is spent
+	var cb = duel(r, g)
+	var ally = f
+	ally.pos = Vector2i(0, 1)
+	cb.all.append(ally)
+	cb.order.append(ally)
+	eq(cb.help(r, ally).ok, true, "help")
+	eq(r.actions, 0, "help costs the action")
+	eq(ally.has("helped"), true, "ally is helped")
+	cb.end_turn()
+	cb.end_turn()
+	cb.dice.queue = [2, 17]
+	eq(cb.attack(ally, g).roll, 17, "helped attack has advantage")
+	eq(ally.has("helped"), false, "help is used up")
+	# hide: beats a low passive perception and gives advantage once
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(r, g)
+	cb.dice.queue = [18]
+	eq(cb.hide(r).success, true, "hide succeeds")
+	eq(r.has("hidden"), true, "hidden")
+	cb.dice.queue = [3, 16]
+	eq(cb.attack(r, g, 0, true).roll, 16, "hidden attack has advantage")
+	eq(r.has("hidden"), false, "attacking reveals")
+	cb = duel(r, g)
+	cb.dice.queue = [1]
+	var h2: Dictionary = cb.hide(r)
+	eq(h2.get("success", h2), false, "hide can fail")
+	# shove: a winning contest knocks the foe prone, a loss does not
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(f, g)
+	cb.dice.queue = [18, 2]
+	var sh: Dictionary = cb.shove(f, g)
+	eq(sh.get("success", sh), true, "shove wins")
+	eq(g.has("prone"), true, "shoved foe is prone")
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(f, g)
+	cb.dice.queue = [1, 20]
+	eq(cb.shove(f, g).success, false, "shove loses")
+	cb = duel(f, g, Vector2i(5, 0))
+	eq(cb.shove(f, g).ok, false, "shove needs adjacency")
+
+# Control spells added later: Web restrains on a failed save, Faerie Fire gives advantage against, Blur gives disadvantage against.
+func t_control_spells() -> void:
+	var w = hero("wizard", 5)
+	var g = Creature.make_monster(srd, "goblin")
+	var cb = duel(w, g, Vector2i(3, 0))
+	cb.dice.queue = [2]
+	eq(cb.cast(w, "web", [g], 2).ok, true, "web casts")
+	eq(g.has("restrained"), true, "web restrains on a failed save")
+	w = hero("wizard", 5)
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(w, g, Vector2i(3, 0))
+	cb.dice.queue = [20]
+	cb.cast(w, "web", [g], 2)
+	eq(g.has("restrained"), false, "web is shrugged off on a good save")
+	var d = hero("druid", 3)
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(d, g, Vector2i(1, 0))
+	cb.dice.queue = [2]
+	cb.cast(d, "faerie-fire", [g], 1)
+	eq(g.has("faerie-fire"), true, "faerie fire outlines the goblin")
+	cb.dice.queue = [5, 17]
+	eq(cb.attack(d, g, 0, true).roll, 17, "attacks against a lit target have advantage")
+	w = hero("wizard", 5)
+	g = Creature.make_monster(srd, "goblin")
+	cb = duel(w, g, Vector2i(1, 0))
+	cb.cast(w, "blur", [w], 2)
+	eq(w.has("blurred"), true, "blur on self")
+	cb.end_turn()
+	cb.dice.queue = [18, 4]
+	eq(cb.attack(g, w).roll, 4, "attacks against a blurred caster have disadvantage")
+
 func t_death() -> void:
 	var f = pc("fighter")
 	var g = Creature.make_monster(srd, "goblin")
@@ -269,6 +383,21 @@ func t_spells() -> void:
 	cb.dice.queue = [4, 4, 4, 20, 1]  # 12 fire; first ogre saves, second fails
 	e = cb.cast(w, "burning-hands", [g, g2])
 	eq([e.results[0].damage, e.results[1].damage], [6, 12], "save for half")
+	# the darts can be split among targets
+	cb = duel(w, g, Vector2i(2, 0))
+	g2.pos = Vector2i(2, 1)
+	cb.all.append(g2)
+	cb.dice.queue = [1, 2, 3]
+	e = cb.cast(w, "magic-missile", [g, g2], 0, [g, g2, g2])
+	eq([e.results.size(), e.results[0].damage, e.results[0].darts, e.results[1].damage, e.results[1].darts], [2, 2, 1, 7, 2], "magic missile split 1 + 2 darts")
+	# scorching ray: three rays, each its own attack roll
+	w = pc("wizard", 3)
+	w.spells.append("scorching-ray")
+	cb = duel(w, g, Vector2i(2, 0))
+	cb.all.append(g2)
+	cb.dice.queue = [15, 4, 3, 1, 18, 6, 6]  # ray 1 hits for 7, ray 2 misses (natural 1), ray 3 hits for 12
+	e = cb.cast(w, "scorching-ray", [g, g2], 2, [g, g2, g2])
+	eq([e.results.size(), e.results[0].hit, e.results[1].hit, e.results[2].hit], [3, true, false, true], "scorching ray: three attack rolls")
 	w.slots = {}
 	cb = duel(w, g)
 	eq(cb.cast(w, "magic-missile", [g]).error, "no spell slot of level 1", "out of slots")
@@ -365,10 +494,12 @@ func t_rest_and_level() -> void:
 	eq([c.level, c.max_hp, c.hp, c.slots[1], c.res.channel_divinity], [2, 10 + 7, 3 + 7, 1, 1], "level up")
 	eq(c.gain_xp(srd, 600), 1, "level 3 at 900 xp")
 	eq([c.level, c.slots_max], [3, {1: 4, 2: 2}], "level 3")
-	eq(c.gain_xp(srd, 50000), 2, "capped at level 5")
+	eq(c.gain_xp(srd, 5600), 2, "level 5 at 6500 xp")
 	eq([c.level, c.slots_max, c.abil.wis], [5, {1: 4, 2: 3, 3: 2}, 18], "level 5, wisdom raised at level 4")
 	var again = Creature.from_dict(srd, c.to_dict())
 	eq([again.level, again.abil.wis, again.max_hp], [5, 18, c.max_hp], "level 5 survives a save")
+	eq(c.gain_xp(srd, 100000), 3, "capped at level 8")
+	eq([c.level, c.abil.wis], [8, 20], "level 8, second ability increase")
 	var k = hero("warlock", 2)
 	k.slots = {1: 0}
 	k.short_rest(d)
@@ -438,6 +569,17 @@ func t_classes() -> void:
 	eq([cb.can_act(bones), c.res.channel_divinity], [false, 0], "turned creatures cannot act")
 	cb.damage(bones, 1)
 	eq(cb.can_act(bones), true, "damage ends turning")
+	# a turned creature runs instead of freezing
+	c = hero("cleric", 2)
+	bones = Creature.make_monster(srd, "skeleton")
+	cb = duel(c, bones)
+	cb.dice.queue = [2]
+	cb.turn_undead(c)
+	var gap0: int = cb.dist(c.pos, bones.pos)
+	while cb.current() != bones:
+		cb.end_turn()
+	AI.take_turn(cb, bones)
+	eq(cb.dist(c.pos, bones.pos) > gap0, true, "turned skeleton moves away on its turn")
 	c = hero("cleric")
 	friend = hero("fighter")
 	cb = allies(c, friend)

@@ -20,8 +20,10 @@ const COND = {
 	"stunned": {"incap": true, "def": 1, "autofail": true, "speed0": true},
 	"unconscious": {"incap": true, "def": 1, "autofail": true, "crit_melee": true, "speed0": true},
 	# Not SRD conditions, but they ride the same list so they time out and end with concentration.
-	"turned": {"incap": true},  # shortcut: a turned creature stands frozen instead of fleeing
+	"turned": {"incap": true, "flee": true},  # cannot attack or cast; spends its turn running from the cleric
 	"raging": {}, "blessed": {}, "shielded": {}, "mage-armored": {}, "marked": {},
+	"helped": {"atk": 1}, "hidden": {"atk": 1},  # used up by the next attack
+	"faerie-fire": {"def": 1}, "blurred": {"def": -1},
 }
 
 var dice
@@ -104,6 +106,7 @@ func _advance() -> Dictionary:
 			continue
 		for x in all:
 			x.sneak_used = false
+			x.light_used = -1
 		c.actions = 1
 		c.bonus = true
 		c.reaction = true
@@ -116,7 +119,7 @@ func _advance() -> Dictionary:
 		c.cast_leveled_action = false
 		if c.hp == 0 and not c.stable:
 			death_save(c)
-		if not can_act(c):
+		if not can_act(c) and not flag(c, "flee"):
 			if c.hp > 0:
 				_tick(c)
 			continue
@@ -299,16 +302,38 @@ func _mode(a, t, ranged: bool, far: bool) -> int:
 		dis = dis or far or all.any(func(o): return o.side != a.side and can_act(o) and dist(o.pos, a.pos) <= 5)
 	return int(adv) - int(dis)
 
-# Armour class right now, with spells that raise it.
-func ac_of(t) -> int:
+# Cover for a ranged attack from a to t: +2 (half) when one wall square lies between them on the straight line,
+# +5 (three-quarters) when two or more do. shortcut: the line runs between square centres, so it is a coarse test.
+func cover_bonus(a, t) -> int:
+	var steps := maxi(absi(t.pos.x - a.pos.x), absi(t.pos.y - a.pos.y))
+	var walls := 0
+	for i in range(1, steps):
+		var f := float(i) / steps
+		var cell := Vector2i(roundi(lerpf(a.pos.x, t.pos.x, f)), roundi(lerpf(a.pos.y, t.pos.y, f)))
+		if blocked.has(cell):
+			walls += 1
+	return 5 if walls >= 2 else (2 if walls == 1 else 0)
+
+# Armour class right now, with spells that raise it. Pass the attacker (ranged only) to add cover.
+func ac_of(t, from = null) -> int:
 	var v: int = t.ac
 	if t.has("mage-armored"):
 		v = max(v, 13 + t.mod("dex"))
-	return v + (2 if t.has("shielded") else 0)
+	return v + (2 if t.has("shielded") else 0) + (cover_bonus(from, t) if from != null else 0)
+
+# The chance (0 to 100) that attack i of a hits t right now, with advantage or disadvantage worked in,
+# for the hit-chance tag. mode: 1 advantage, -1 disadvantage. A natural 20 always hits, a natural 1 never.
+func hit_chance(a, t, i := 0) -> Dictionary:
+	var w: Dictionary = a.attacks[i]
+	var d := dist(a.pos, t.pos)
+	var mode := _mode(a, t, w.ranged, w.ranged and d > w.range)
+	var p := clampf((21.0 - (ac_of(t, a if w.ranged else null) - w.bonus)) / 20.0, 0.05, 0.95)
+	var chance := 1.0 - pow(1.0 - p, 2.0) if mode > 0 else (p * p if mode < 0 else p)
+	return {"pct": roundi(chance * 100.0), "mode": mode, "in_range": d <= (w.long if w.ranged else w.reach)}
 
 # free = true skips the turn and action cost (opportunity attacks, bonus-action strikes).
 # One Attack action covers `multi` swings (Extra Attack, Multiattack).
-func attack(a, t, i := 0, free := false) -> Dictionary:
+func attack(a, t, i := 0, free := false, off := false) -> Dictionary:
 	if not free:
 		if a != current():
 			return err("not this creature's turn")
@@ -329,19 +354,28 @@ func attack(a, t, i := 0, free := false) -> Dictionary:
 		else:
 			a.actions -= 1
 			a.attacks_left = a.multi - 1
+	if w.get("light", false) and not w.ranged and not off:
+		a.light_used = i
 	var r: Dictionary = dice.d20(mode)
+	remove_condition(a, "helped")  # a Help or a hiding place is spent by the attack
+	remove_condition(a, "hidden")
 	var crit: bool = r.roll >= a.crit_min
 	var bonus: int = w.bonus + (dice.die(4) if a.has("blessed") else 0)
-	var hit: bool = crit or (r.roll != 1 and r.roll + bonus >= ac_of(t))
+	var ac := ac_of(t, a if w.ranged else null)
+	var hit: bool = crit or (r.roll != 1 and r.roll + bonus >= ac)
 	if hit and d <= 5 and flag(t, "crit_melee"):
 		crit = true
 	var e := emit({"type": "attack", "who": a.name, "target": t.name, "weapon": w.name, "roll": r.roll,
-		"rolls": r.rolls, "total": r.roll + bonus, "ac": ac_of(t), "mode": mode, "hit": hit, "crit": crit, "damage": 0})
+		"rolls": r.rolls, "total": r.roll + bonus, "ac": ac, "cover": ac - ac_of(t), "mode": mode, "hit": hit, "crit": crit, "damage": 0})
 	if not hit:
 		return e
 	var parts := []
 	for p in w.damage:
-		parts.append([dice.roll(p.dice, crit), p.type])
+		# the off-hand weapon adds no ability modifier to damage, unless the hero fights with two weapons by style
+		var expr: String = p.dice
+		if off and a.fight_style != "two-weapon" and w.has("die"):
+			expr = w.die
+		parts.append([dice.roll(expr, crit), p.type])
 	if a.has("raging") and not w.ranged and w.get("abil", "str") == "str":
 		parts[0][0] += a.rage_bonus
 	if t.conditions.any(func(x): return x.id == "marked" and x.get("by") == a):  # Hunter's Mark
@@ -450,6 +484,50 @@ func disengage(c, as_bonus := false) -> Dictionary:
 func dodge(c) -> Dictionary:
 	return _simple(c, "dodge", false)
 
+# Help: an ally gets advantage on their next attack.
+func help(c, ally) -> Dictionary:
+	if ally == c or ally.dead or ally.side != c.side or dist(c.pos, ally.pos) > 30:
+		return err("pick an ally within 30 ft")
+	var p := _pay(c)
+	if p != "":
+		return err(p)
+	add_condition(ally, "helped", 2)
+	return emit({"type": "help", "who": c.name, "target": ally.name})
+
+# Hide: a Stealth check against the best passive Perception among awake foes. Hidden, your next attack has advantage.
+func hide(c, as_bonus := false) -> Dictionary:
+	if as_bonus and not "cunning-action" in c.features:
+		return err("needs Cunning Action")
+	var p := _pay(c, as_bonus)
+	if p != "":
+		return err(p)
+	var watch := 0
+	for o in all:
+		if o.side != c.side and can_act(o):
+			watch = maxi(watch, 10 + o.skill_bonus(srd, "perception"))
+	var r: Dictionary = dice.d20()
+	var total: int = r.roll + c.skill_bonus(srd, "stealth")
+	var ok: bool = total >= watch
+	if ok:
+		add_condition(c, "hidden")
+	return emit({"type": "hide", "who": c.name, "roll": r.roll, "total": total, "dc": watch, "success": ok})
+
+# Shove: Athletics against the target's Athletics or Acrobatics. Success knocks it prone.
+func shove(c, t) -> Dictionary:
+	if t.dead or t.side == c.side or dist(c.pos, t.pos) > 5:
+		return err("needs a foe next to you")
+	var p := _pay(c)
+	if p != "":
+		return err(p)
+	var mine: Dictionary = dice.d20()
+	var theirs: Dictionary = dice.d20()
+	var a: int = mine.roll + c.skill_bonus(srd, "athletics")
+	var b: int = theirs.roll + maxi(t.skill_bonus(srd, "athletics"), t.skill_bonus(srd, "acrobatics"))
+	var ok: bool = a >= b and t.size < c.size + 0.9  # nothing much bigger than you goes down
+	if ok:
+		add_condition(t, "prone")
+	return emit({"type": "shove", "who": c.name, "target": t.name, "roll": mine.roll, "total": a, "dc": b, "success": ok})
+
 func second_wind(c) -> Dictionary:
 	if c.res.get("second_wind", 0) < 1:
 		return err("Second Wind not available")
@@ -484,6 +562,23 @@ func reckless(c) -> Dictionary:
 		return err("Reckless Attack not available")
 	c.reckless = true
 	return emit({"type": "reckless_attack", "who": c.name})
+
+# Two-weapon fighting: after attacking with a light melee weapon, a bonus-action strike with a different light one.
+func offhand_index(c) -> int:
+	if c.light_used < 0:
+		return -1
+	return c.attacks.find_custom(func(w): return w.get("light", false) and not w.ranged and w != c.attacks[c.light_used])
+
+func offhand(c, t) -> Dictionary:
+	var i := offhand_index(c)
+	if i < 0:
+		return err("attack with a light weapon first, and carry a second one")
+	if t.dead or dist(c.pos, t.pos) > c.attacks[i].reach:
+		return err("out of range")
+	var p := _pay(c, true)
+	if p != "":
+		return err(p)
+	return attack(c, t, i, true, true)
 
 # Monk: one unarmed strike as a bonus action, or two for a ki point (Flurry of Blows).
 func bonus_strike(c, t, flurry := false) -> Dictionary:
@@ -577,21 +672,75 @@ func _special(c, sp: Dictionary, targets: Array, slot: int) -> bool:
 		"hunters-mark":
 			c.conc = sp.index
 			add_condition(targets[0], "marked", -1, {"by": c})
+		"web", "entangle":  # a failed save leaves them restrained; each turn they try to tear free
+			c.conc = sp.index
+			for t in targets:
+				if not save(t, "dex" if sp.index == "web" else "str", c.spell_dc()).success:
+					add_condition(t, "restrained", 10, {"save": "str", "dc": c.spell_dc(), "by": c})
+		"faerie-fire":  # outlined in light: everything has advantage against them
+			c.conc = sp.index
+			for t in targets:
+				if not save(t, "dex", c.spell_dc()).success:
+					add_condition(t, "faerie-fire", 10, {"by": c})
+		"fear":
+			c.conc = sp.index
+			for t in targets:
+				if t != c and not save(t, "wis", c.spell_dc()).success:
+					add_condition(t, "frightened", 10, {"save": "wis", "dc": c.spell_dc(), "by": c})
+		"blur":
+			c.conc = sp.index
+			add_condition(c, "blurred", 10, {"by": c})
+		"invisibility":
+			c.conc = sp.index
+			add_condition(targets[0], "invisible", 10, {"by": c})
 		_:
 			return false
 	return true
 
-const SPECIAL = ["sleep", "hold-person", "bless", "shield-of-faith", "mage-armor", "hunters-mark"]
+const VOLLEYS = ["magic-missile", "scorching-ray"]
+
+# How many darts or rays a volley spell sends at this slot level.
+func volley_size(index: String, slot: int) -> int:
+	return (2 + slot) if index == "magic-missile" else (3 + slot - 2)
+
+# Magic Missile: every dart hits (1d4+1 force each). Scorching Ray: every ray needs its own spell attack roll (2d6 fire).
+func _volley(c, sp: Dictionary, targets: Array, slot: int, aims: Array, e: Dictionary) -> Dictionary:
+	var n := volley_size(sp.index, slot)
+	var who := []
+	for i in n:
+		var t = aims[i] if i < aims.size() and aims[i] != null and not aims[i].dead else targets[i % targets.size()]
+		who.append(t)
+	var type: String = sp.damage[0].damage_type.index
+	var per := "1d4 + 1" if sp.index == "magic-missile" else "2d6"
+	var totals := {}
+	for t in who:
+		if t.dead:
+			continue
+		if sp.index == "magic-missile":
+			totals[t] = int(totals.get(t, 0)) + dice.roll(per)
+		else:
+			var r: Dictionary = dice.d20(_mode(c, t, true, false))
+			var crit: bool = r.roll == 20
+			var hit: bool = crit or (r.roll != 1 and r.roll + c.spell_attack() >= ac_of(t, c))
+			e.results.append({"target": t.name, "roll": r.roll, "total": r.roll + c.spell_attack(), "hit": hit, "crit": crit,
+				"damage": damage(t, dice.roll(per, crit), type, crit) if hit else 0})
+	for t in totals:
+		e.results.append({"target": t.name, "damage": damage(t, totals[t], type), "darts": who.count(t)})
+	return e
+
+const SPECIAL = ["sleep", "hold-person", "bless", "shield-of-faith", "mage-armor", "hunters-mark", "web", "entangle", "faerie-fire", "fear", "blur", "invisibility"]
 
 # Which of a spell list the engine can resolve. The rest need code before they can be offered.
 func castable(index: String) -> bool:
 	var sp: Dictionary = srd.t.spells[index]
 	var known: bool = index in SPECIAL or sp.has("heal_at_slot_level") or (sp.has("damage") \
 		and (sp.damage[0].has("damage_at_slot_level") or sp.damage[0].has("damage_at_character_level")))
-	return known and sp.casting_time in ["1 action", "1 bonus action"]
+	return (known or index in VOLLEYS) and sp.casting_time in ["1 action", "1 bonus action"]
 
 # targets: for area spells the board decides who is inside and passes them all.
-func cast(c, index: String, targets: Array, slot := 0) -> Dictionary:
+# aims: for Magic Missile and Scorching Ray, one creature per dart or ray (the same creature may repeat); left empty the
+# volley is dealt out among `targets` in turn.
+func cast(c, index: String, targets: Array, slot := 0, aims := []) -> Dictionary:
 	if not index in c.spells:
 		return err("spell not prepared")
 	if not castable(index):
@@ -624,6 +773,8 @@ func cast(c, index: String, targets: Array, slot := 0) -> Dictionary:
 	var e := emit({"type": "cast", "who": c.name, "spell": sp.name, "slot": slot if lvl > 0 else 0, "results": []})
 	if _special(c, sp, targets, slot):
 		return e
+	if sp.index in VOLLEYS:
+		return _volley(c, sp, targets, slot, aims, e)
 
 	if sp.has("heal_at_slot_level"):
 		var expr: String = sp.heal_at_slot_level[str(slot)].replace("MOD", str(c.mod(c.cast_abil)))
@@ -645,7 +796,7 @@ func cast(c, index: String, targets: Array, slot := 0) -> Dictionary:
 		for t in targets:
 			var r: Dictionary = dice.d20(_mode(c, t, sp.attack_type == "ranged", false))
 			var crit: bool = r.roll == 20
-			var hit: bool = crit or (r.roll != 1 and r.roll + c.spell_attack() >= ac_of(t))
+			var hit: bool = crit or (r.roll != 1 and r.roll + c.spell_attack() >= ac_of(t, c if sp.attack_type == "ranged" else null))
 			e.results.append({"target": t.name, "roll": r.roll, "total": r.roll + c.spell_attack(), "hit": hit,
 				"crit": crit, "damage": damage(t, dice.roll(expr, crit), type, crit) if hit else 0})
 	elif sp.has("dc"):

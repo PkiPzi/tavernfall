@@ -15,3 +15,7 @@ window/stretch/mode="canvas_items"
 [autoload]
 
 Game="*res://game.gd"
+
+[rendering]
+
+textures/default_filters/anisotropic_filtering_level=4

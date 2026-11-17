@@ -1,2 +1,7 @@
 .godot/
 saves/
+assets/bg3/
+tools/bg3/libcodecs.so
+tools/bg3/__pycache__/
+players/
+tools/tts/models/

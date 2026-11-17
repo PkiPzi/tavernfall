@@ -52,19 +52,21 @@ func _fake(prompt: String) -> Dictionary:
 	if prompt.begins_with("REQUEST: plan"):
 		return {"title": "The Hollow Crypt", "setting": "A border village troubled by the restless dead.",
 			"villain": {"name": "Maelis the Pale", "motive": "wants an army of bones"},
-			"locations": [{"name": "The Gilded Mug", "description": "A warm tavern.", "template": "tavern"},
+			"locations": [{"name": "The Gilded Mug", "description": "A warm tavern.", "template": "tavern", "scene": "market_street"},
 				{"name": "Hollow Crypt", "description": "Cold halls under the hill.", "template": "dungeon"}],
 			"npcs": [{"name": "Tolla", "role": "innkeeper"}],
 			"encounters": [{"location": "Hollow Crypt", "monsters": [{"index": "skeleton", "count": 2}], "trigger": "entering"}],
 			"acts": ["Hear of the crypt", "Fight through it", "Face Maelis"],
 			"opening": "Rain hammers the shutters of the Gilded Mug as Tolla slides a key across the bar."}
 	fake_turn += 1
-	var base := {"narration": "", "location": {"name": "The Gilded Mug", "template": "tavern"}, "choices": [],
+	var base := {"narration": "", "location": {"name": "The Gilded Mug", "template": "tavern"}, "choices": [], "speaker": {"name": "Tolla", "kind": "gruff innkeeper"},
 		"check": null, "encounter": null, "rest": null, "reward": null, "summary": "Fake summary %d." % fake_turn, "ended": false}
 	match fake_turn:
 		1:
-			base.narration = "Tolla tells you of lights in the old crypt. The road there is dark."
-			base.choices = ["Sneak toward the crypt", "Ask around", "Rest first"]
+			base.narration = "Tolla leans across the bar and lowers her voice. The road to the old crypt is dark, and the lanterns on it have gone out one by one."
+			base.speaker = {"name": "Tolla", "kind": "gruff woman innkeeper", "says": "Lights in the old crypt, three nights running. I'll not send anyone up there, but I won't stop you either."}
+			base.choices = [{"text": "Sneak toward the crypt", "skill": "stealth", "dc": 12}, {"text": "Read the wards scratched on her doorframe", "skill": "arcana", "dc": 13, "requires": "arcana"},
+				{"text": "Study the faded notice by the door", "requires": "history"}, "Ask around", "Rest first"]
 		2:
 			base.narration = "You creep along the hedgerow toward the crypt door."
 			base.check = {"character": "", "skill": "stealth", "dc": 12, "why": "moving unseen"}
@@ -79,7 +81,7 @@ func _fake(prompt: String) -> Dictionary:
 			base.choices = ["Press on", "Take a short rest"]
 		5:
 			base.narration = "You bind your wounds in the quiet of the crypt."
-			base.location = {"name": "Hollow Crypt", "template": "cave"}
+			base.location = {"name": "Hollow Crypt", "template": "cave", "scene": "underdark"}
 			base.rest = "short"
 			base.choices = ["Press on"]
 		_:
