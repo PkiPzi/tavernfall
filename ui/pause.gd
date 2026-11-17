@@ -45,7 +45,7 @@ static func open(layer: CanvasLayer, quit_to_menu: Callable) -> Control:
 		menu.add_child(Ui.button("Fullscreen: " + ("on" if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN else "off"), func():
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN else DisplayServer.WINDOW_MODE_FULLSCREEN)
 			fill_box[0].call()))
-		menu.add_child(Ui.button("Picture: " + Game.QUALITY_NAMES[Game.quality] + "  (sharper is slower)", func(): Game.set_quality(Game.quality + 1); fill_box[0].call()))
+		menu.add_child(Ui.button("Picture: " + Game.QUALITY_NAMES[Game.quality] + ["  (up to 720p)", "  (up to 1080p)", "  (up to full size)"][Game.quality] + ", adapts to hold the frame rate", func(): Game.set_quality(Game.quality + 1); fill_box[0].call()))
 		menu.add_child(Ui.button("Quit to the title screen", func(): close.call(); quit_to_menu.call()))
 	fill_box.append(fill)
 	fill.call()

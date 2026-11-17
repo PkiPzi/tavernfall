@@ -600,7 +600,8 @@ static func fire_pit(parent: Node3D, pos: Vector3, color: Color, shadows := true
 	l.omni_range = 15.0
 	l.omni_attenuation = 1.4
 	l.set_meta("base", 10.0)
-	l.shadow_enabled = shadows  # shadowed omni lights are the costly part of a night scene
+	l.shadow_enabled = shadows and not fx_off("torch")  # shadowed omni lights are the costly part of a night scene
+	cheap_shadow(l)
 	holder.add_child(l)
 	return l
 
@@ -623,7 +624,8 @@ static func torch(parent: Node3D, pos: Vector3, out: Vector3, color: Color, shad
 	l.omni_range = 10.0
 	l.omni_attenuation = 1.5
 	l.set_meta("base", 6.5)
-	l.shadow_enabled = shadows
+	l.shadow_enabled = shadows and not fx_off("torch")
+	cheap_shadow(l)
 	holder.add_child(l)
 	return l
 
@@ -958,11 +960,27 @@ static func build(parent: Node3D, template: String, rng: RandomNumberGenerator, 
 		l.light_color = t.torch
 		l.light_energy = 4.0
 		l.omni_range = 14.0
-		l.shadow_enabled = true
+		l.shadow_enabled = not fx_off("torch")
+		cheap_shadow(l)
 		parent.add_child(l)
 		torches.append(l)
 	_light(parent, t, false)
 	return {"walls": walls, "rough": rough, "torches": torches}
+
+# A shadow-casting torch or fire made cheap: two paraboloid shadow passes instead of six cube faces, and no shadow at all from a light
+# far from the camera (it would not be seen). The light itself stays on.
+static func cheap_shadow(l: OmniLight3D) -> void:
+	if fx_off("cheap"):
+		return
+	l.omni_shadow_mode = OmniLight3D.SHADOW_DUAL_PARABOLOID
+	l.distance_fade_enabled = true
+	l.distance_fade_begin = 60.0
+	l.distance_fade_length = 10.0
+	l.distance_fade_shadow = 24.0
+
+# Test hook: TAVERN_FX_OFF="ssao,ssr,fog,glow,grade,sun,torch,motes" switches those effects off so their cost can be measured with TAVERN_PERF.
+static func fx_off(name: String) -> bool:
+	return name in OS.get_environment("TAVERN_FX_OFF").split(",", false)
 
 static func _light(parent: Node3D, t: Dictionary, outdoor: bool, mood := "day") -> void:
 	parent.get_viewport().msaa_3d = Viewport.MSAA_DISABLED  # FSR 2 brings its own temporal anti-aliasing
@@ -1042,11 +1060,16 @@ static func _light(parent: Node3D, t: Dictionary, outdoor: bool, mood := "day") 
 	env.volumetric_fog_gi_inject = 0.0
 	env.volumetric_fog_anisotropy = 0.55  # light shafts are brightest looking toward the light
 	env.volumetric_fog_albedo = look.get("fog", Color("b9a58f")) if not outdoor else Color("b9a58f")
+	env.ssao_enabled = env.ssao_enabled and not fx_off("ssao")
+	env.ssr_enabled = env.ssr_enabled and not fx_off("ssr")
+	env.volumetric_fog_enabled = env.volumetric_fog_enabled and not fx_off("fog")
+	env.glow_enabled = env.glow_enabled and not fx_off("glow")
+	env.adjustment_enabled = env.adjustment_enabled and not fx_off("grade")
 	var we := WorldEnvironment.new()
 	we.environment = env
 	parent.add_child(we)
 	var motes := GPUParticles3D.new()  # slow dust in the torch light, or pollen in the sun
-	motes.amount = 90
+	motes.amount = 0 if fx_off("motes") else 90
 	motes.lifetime = 9.0
 	motes.preprocess = 9.0
 	motes.visibility_aabb = AABB(Vector3(-20, -2, -20), Vector3(60, 14, 60))
@@ -1089,12 +1112,12 @@ static func _light(parent: Node3D, t: Dictionary, outdoor: bool, mood := "day") 
 	if look.has("sun"):
 		sun.light_color = look.sun
 	sun.light_volumetric_fog_energy = 2.5 if not outdoor else 1.0
-	sun.shadow_enabled = true
+	sun.shadow_enabled = not fx_off("sun")
 	sun.shadow_bias = 0.03  # the default swallows small stones whole
 	sun.shadow_normal_bias = 1.0
 	sun.shadow_blur = 1.2
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-	sun.directional_shadow_max_distance = 60.0
+	sun.directional_shadow_max_distance = 45.0
 	parent.add_child(sun)
 
 static func flicker(torches: Array) -> void:

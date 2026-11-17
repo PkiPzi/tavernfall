@@ -184,6 +184,19 @@ Engine stays Godot: BG3's own engine cannot be reused, and its assets convert to
 - Test hooks added to `TAVERN_CLICKS`: `e now` ends the turn, `p x,y` puts the nearest foe there. With `TAVERN_SHOT` set the click hook no longer quits, the screenshot does.
 - Story stage: floating hero names are hidden (the portrait column shows them).
 
+## Performance (2026-11-17 night, GTX 1650 Mobile Max-Q 4 GB, 2784x1566 panel)
+- Measured with `TAVERN_PERF=<seconds>` (fps, CPU and GPU ms of the main viewport, draw calls, triangles, VRAM; `TAVERN_INVENTORY=1` lists the heaviest meshes).
+  Switches for tests: `TAVERN_SCALE=0.7` (fixed 3D scale, no governor), `TAVERN_GOV=off`, `TAVERN_FX_OFF=ssao,ssr,fog,glow,grade,sun,torch,motes,cheap`.
+- Finding: GPU-bound (about 32 ms GPU against 1.5 to 5 ms CPU at scale 0.98, which the "Sharp" setting gave). A scene is about 600k triangles in one pass, about 1100 draw
+  calls once shadow passes are counted. No single effect dominates: SSR, volumetric fog, glow, the grade, torch shadows and the sun shadow each cost about 3 to 5 ms.
+  Do NOT benchmark while another game window is open: two processes time-slice the GPU and every number is wrong (7 fps measured against 30).
+- Done: (1) adaptive resolution governor in `game.gd` (`_process`): the picture setting is the ceiling (Fast 720p, Balanced 1080p, Sharp the full window), the governor
+  steps the internal resolution so the median GPU time stays under 92% of the refresh interval, floor scale 0.42, last stable scale saved in settings; (2) torch and fire
+  shadows use two paraboloid passes instead of a six-face cube and switch off beyond 24 m from the camera (`Scenery.cheap_shadow`); (3) project settings: directional shadow map 2048,
+  SSAO quality low, smaller fog volume (48x48x40), linear glow upscale; sun shadow distance 45 m.
+- To do with a clean GPU: measure the real cost per effect at 1080p, then decide SSR (blocky stair steps in floor reflections), SSAO and volumetric fog settings,
+  try FSR 2 (temporal, sharper) against FSR 1, hair meshes (20k triangles each) as non-shadow-casters, Godot mesh LODs for runtime-loaded BG3 models.
+
 ## In progress: interface and graphics overhaul (paused 2026-11-16, uncommitted)
 The user asked for a Baldur's Gate 3 inspired look (inspiration only, original art): portraits everywhere, richer
 selection screens, pictures and interaction instead of text only, and less childlike in-game graphics.

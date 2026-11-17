@@ -85,6 +85,8 @@ func _ready() -> void:
 	dm = Dm.new()
 	settings.load(SETTINGS)
 	quality = int(settings.get_value("video", "quality", 1))
+	scale_now = clampf(float(settings.get_value("video", "scale", 0.7)), SCALE_FLOOR, 1.0)
+	_saved_scale = scale_now
 	_fit_resolution()
 	sound_on = settings.get_value("sound", "on", true) and OS.get_environment("TAVERN_MUTE") == ""
 	music_player = AudioStreamPlayer.new()
@@ -93,11 +95,47 @@ func _ready() -> void:
 	speech = load("res://ui/voice.gd").new()
 	speech.on = settings.get_value("sound", "voice", true) and (OS.get_environment("TAVERN_MUTE") == "" or OS.get_environment("TAVERN_VOICE_TEST") != "") and OS.get_environment("TAVERN_NOVOICE") == ""
 	add_child(speech)
+	if OS.get_environment("TAVERN_PERF") != "":
+		_perf()
 	var shot := OS.get_environment("TAVERN_SHOT")
 	if shot != "":
 		await get_tree().create_timer(float(OS.get_environment("TAVERN_SHOT_AT"))).timeout
 		get_viewport().get_texture().get_image().save_png(shot)
 		get_tree().quit()
+
+# Test hook TAVERN_PERF=seconds: after 8 s of warm-up, prints once a second the frame rate, CPU and GPU milliseconds of the main viewport,
+# draw calls, triangles and video memory, then quits. Compare with TAVERN_SCALE (3D resolution scale) and TAVERN_NOFX (cheap lighting).
+func _perf() -> void:
+	var vp := get_tree().root.get_viewport_rid()
+	RenderingServer.viewport_set_measure_render_time(vp, true)
+	await get_tree().create_timer(8.0).timeout
+	var n := int(OS.get_environment("TAVERN_PERF"))
+	var fps := []
+	for i in n:
+		await get_tree().create_timer(1.0).timeout
+		fps.append(Engine.get_frames_per_second())
+		print("PERF fps %d  cpu %.1f ms  gpu %.1f ms  draws %d  tris %dk  vram %d MB  3D scale %.2f at %s" % [Engine.get_frames_per_second(),
+			RenderingServer.viewport_get_measured_render_time_cpu(vp), RenderingServer.viewport_get_measured_render_time_gpu(vp),
+			Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000,
+			Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576, get_tree().root.scaling_3d_scale, get_tree().root.size])
+	print("PERF average fps %.1f" % (fps.reduce(func(a, b): return a + b, 0) / float(max(n, 1))))
+	if OS.get_environment("TAVERN_INVENTORY") != "":  # which meshes carry the triangles (one pass, not counting shadow passes)
+		var rows := []
+		var total := 0
+		for mi in get_tree().root.find_children("*", "MeshInstance3D", true, false):
+			if not (mi as MeshInstance3D).is_visible_in_tree() or mi.mesh == null:
+				continue
+			var tris := 0
+			for si in mi.mesh.get_surface_count():
+				var arr: Array = mi.mesh.surface_get_arrays(si)
+				tris += (arr[Mesh.ARRAY_INDEX].size() if arr[Mesh.ARRAY_INDEX] != null else arr[Mesh.ARRAY_VERTEX].size()) / 3
+			total += tris
+			rows.append([tris, "%s  (%s)" % [mi.name, mi.get_parent().name]])
+		rows.sort_custom(func(a, b): return a[0] > b[0])
+		print("INVENTORY total %dk triangles in %d meshes" % [total / 1000, rows.size()])
+		for r in rows.slice(0, 25):
+			print("INVENTORY %7d  %s" % r)
+	get_tree().quit()
 
 # extra: what the player chose in the creator over the class preset (hair, hair_color, beard, abilities, skills, expertise, style, spells).
 func make_hero(hero_name: String, race: String, cls: String, gender := "woman", look := "", seed := 1, variant := 0, extra := {}):
@@ -126,10 +164,19 @@ func sfx(id: String, vary := 0.08) -> void:
 	p.finished.connect(p.queue_free)
 	p.play()
 
-# The 3D scene is drawn at a lower resolution on big screens and scaled up with FSR; the interface stays sharp at full size.
-# A 4K display gave 19 frames a second on the GTX 1650 before this.
+# The 3D picture is drawn below the window's size and scaled up with FSR (the interface stays sharp at full size). The picture setting is the
+# CEILING: Fast 720p, Balanced 1080p, Sharp the full window. Under that ceiling a governor watches how long the GPU takes per frame and
+# raises or lowers the internal resolution to hold the display's refresh rate, so the picture is always as sharp as the card can keep at 60 fps.
 const QUALITY_NAMES = ["Fast", "Balanced", "Sharp"]
-var quality := 1   # 0 fast, 1 balanced (the default), 2 sharp: how large the 3D picture is drawn before it is scaled up
+const RENDER_HEIGHT = [720, 1080, 100000]
+const SCALE_FLOOR := 0.42      # never below about 650p on this panel: softer than that is worse than a lower frame rate
+var quality := 1               # 0 fast, 1 balanced (the default), 2 sharp
+var scale_cap := 1.0           # the ceiling for the picture setting and window size
+var scale_now := 0.7           # what the governor currently uses; starts from the last stable value (saved in settings)
+var _saved_scale := 0.0
+var _gov_samples: Array = []
+var _gov_cool := 3.0           # seconds until the next adjustment (the first seconds are shader compiles, not typical frames)
+var governor_on := true
 
 func set_quality(q: int) -> void:
 	quality = posmod(q, 3)
@@ -138,12 +185,50 @@ func set_quality(q: int) -> void:
 	_fit_resolution()
 
 func _fit_resolution() -> void:
-	var w := get_tree().root.size.x
-	var auto := 1.0 if w <= 2000 else (0.75 if w <= 2800 else 0.667)  # about 1440p inside a 4K window
-	get_tree().root.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR
-	get_tree().root.fsr_sharpness = 0.2  # lower is sharper
-	get_tree().root.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA  # smooths edges cheaply (MSAA is off)
-	get_tree().root.scaling_3d_scale = clampf(auto * [0.75, 1.0, 1.3][quality], 0.4, 1.0)
+	var root := get_tree().root
+	root.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR
+	root.fsr_sharpness = 0.2  # lower is sharper
+	root.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA  # smooths edges cheaply (MSAA is off)
+	scale_cap = clampf(float(RENDER_HEIGHT[quality]) / maxf(root.size.y, 1.0), SCALE_FLOOR, 1.0)
+	if OS.get_environment("TAVERN_SCALE") != "":  # tests: a fixed scale and no governor
+		scale_cap = float(OS.get_environment("TAVERN_SCALE"))
+		governor_on = false
+	scale_now = minf(scale_now, scale_cap)  # a lower ceiling bites at once; a higher one is climbed to by the governor
+	root.scaling_3d_scale = scale_now
+	RenderingServer.viewport_set_measure_render_time(root.get_viewport_rid(), true)
+
+# Median GPU milliseconds over the last half second against the frame budget of this display (about 92% of it).
+func _process(delta: float) -> void:
+	if not governor_on or OS.get_environment("TAVERN_GOV") == "off":
+		return
+	var root := get_tree().root
+	_gov_samples.append(RenderingServer.viewport_get_measured_render_time_gpu(root.get_viewport_rid()))
+	_gov_cool -= delta
+	if _gov_samples.size() > 40:
+		_gov_samples.pop_front()
+	if _gov_cool > 0.0 or _gov_samples.size() < 20:
+		return
+	var sorted := _gov_samples.duplicate()
+	sorted.sort()
+	var med: float = sorted[sorted.size() / 2]
+	var budget := 1000.0 / maxf(DisplayServer.screen_get_refresh_rate(DisplayServer.window_get_current_screen()), 30.0) * 0.92
+	var next := scale_now
+	if med > budget:
+		next = scale_now * clampf(sqrt(budget / med), 0.8, 0.95)  # cost is about proportional to the pixels, which go with scale squared
+	elif med < budget * 0.78 and scale_now < scale_cap:
+		next = scale_now * 1.05
+	next = clampf(next, SCALE_FLOOR, scale_cap)
+	if absf(next - scale_now) >= 0.02:
+		scale_now = next
+		root.scaling_3d_scale = scale_now
+		_gov_cool = 1.5
+		_gov_samples.clear()
+	else:
+		_gov_cool = 0.5
+		if absf(scale_now - _saved_scale) > 0.03:  # settled: remember it so the next start begins here
+			_saved_scale = scale_now
+			settings.set_value("video", "scale", snappedf(scale_now, 0.01))
+			settings.save(SETTINGS)
 
 # BG3 sounds (assets/bg3/audio/<event>_<n>.ogg, exported by tools/bg3/audio.sh): plays one of the event's recordings
 # and returns true, or returns false when none is exported so the caller can fall back to a bundled sound.
