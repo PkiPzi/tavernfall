@@ -62,7 +62,7 @@ Personal single-machine D&D game with Claude as Dungeon Master. Decisions agreed
 
 ## Status
 All five build stages are in (2026-11-16).
-- Stage 1, rules: `rules/`. Test with `godot --headless --path . -s tests/run_tests.gd` (1252 checks).
+- Stage 1, rules: `rules/`. Test with `godot --headless --path . -s tests/run_tests.gd` (1334 checks).
 - Stage 2, battle board: `board/battle.gd`. Clicking squares is checked by `TAVERN_CLICKS` (see the top of that file);
   this found and fixed a bug where click-to-move never worked.
 - Stage 3, Dungeon Master: `ai/`, `ui/story.gd`, `ui/menu.gd`, saves in `game.gd`. Played 17 turns against the
@@ -169,6 +169,18 @@ Engine stays Godot: BG3's own engine cannot be reused, and its assets convert to
   fighting style, cantrips and first level spells (only spells the engine can resolve). Picks live in the slot's `extra` and go into the hero spec (`Game.make_hero(..., extra)`).
 - **Magic Missile / Scorching Ray** (`Combat.cast(..., aims)`): one click per dart or ray, each can target a different foe; Enter sends the rest at the last target. Rays make their own spell attack rolls.
 - Smaller: round soft particles instead of squares (`Scenery.soft_dot`), a painted backdrop behind the story stage (`Stage._backdrop`), `TAVERN_CREATE="wizard,tiefling,woman,560"` hook for creator screenshots.
+
+## Round of 2026-11-17 night (playtest fixes, more spells)
+- Victory screen: the Continue / Fight again button sits under the banner (the hotbar is empty after a win, so a hotbar button was never drawn).
+- Click-to-approach (`Battle._reach`, `_approach_then`): clicking a lone target out of reach of the picked weapon, action (Help 30 ft, Shove, Lay on Hands, strikes) or
+  single-target spell walks to the nearest square that reaches it and then acts, if the movement left allows; otherwise the hint says how many feet of walking are needed.
+- Spells added (`rules/combat.gd` `SPECIAL`): Bane, Heroism, Hideous Laughter, Color Spray, Blindness/Deafness, Command, Hypnotic Pattern, Stinking Cloud, Slow, Haste,
+  Spirit Guardians (aura, start of the foe's turn), Lesser Restoration, Expeditious Retreat, Longstrider, Barkskin, True Strike, Spare the Dying. Shield is a reaction cast
+  automatically when it turns a hit into a miss (`REACTIONS`, `selectable()`; no prompt yet). Shortcuts: Heroism heals instead of temporary hit points, Haste's extra action is any
+  action and its tiredness is not modelled, Stinking Cloud only costs the first turn.
+- Still missing: Revivify (needs a dead target), Misty Step (needs a square target), Mirror Image, upcasting picker, reaction prompts.
+- Test hooks added to `TAVERN_CLICKS`: `e now` ends the turn, `p x,y` puts the nearest foe there. With `TAVERN_SHOT` set the click hook no longer quits, the screenshot does.
+- Story stage: floating hero names are hidden (the portrait column shows them).
 
 ## In progress: interface and graphics overhaul (paused 2026-11-16, uncommitted)
 The user asked for a Baldur's Gate 3 inspired look (inspiration only, original art): portraits everywhere, richer

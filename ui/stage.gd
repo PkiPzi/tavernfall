@@ -64,10 +64,7 @@ func build(template: String, party: Array, opts: Dictionary, arrive := true) -> 
 		var disc: Node = m.node.get_node_or_null("disc")
 		if disc != null:
 			disc.visible = false
-		m.info.text = c.name
-		m.info.font_size = 22
-		m.info.outline_size = 8
-		m.info.modulate = Color("8fd0ff")
+		m.info.visible = false  # the names are in the portrait column; floating ones overlap and hang far above the heads
 		m["home"] = Scenery.world(c.pos)
 		_play(m, "Idle")
 		heroes.append(m)
